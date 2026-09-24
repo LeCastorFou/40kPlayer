@@ -4,9 +4,6 @@ services:
   fortyk:
     build: .
     restart: unless-stopped
-    environment:
-      # code demandé pour créer une partie ou enregistrer une liste (vide = ouvert à tous)
-      FORTYK_ACCESS_CODE: ${FORTYK_ACCESS_CODE:-}
     volumes:
       - fortyk-data:/data
     expose:

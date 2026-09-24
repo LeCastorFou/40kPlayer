@@ -125,6 +125,8 @@ async function poll() {
   try {
     const st = await getJSON(withT(API + '/state?since=' + logLen));
     if (st.ok === false) { $('dtitle').textContent = 'Partie introuvable'; $('dhint').textContent = st.error || ''; return; }
+    if (st.waiting) { view.wasWaiting = true; renderWaiting(st); setTimeout(poll, 2000); return; }
+    if (view.wasWaiting) { location.reload(); return; }  // l'adversaire vient de rejoindre : on repart d'un état propre
     if (view.timeline !== null && st.timeline !== view.timeline && logLen > 0) {
       // une annulation a réécrit l'histoire : on repart du journal complet
       view.timeline = st.timeline; logLen = 0; $('log').innerHTML = ''; lastVersion = -1;
@@ -262,6 +264,7 @@ function renderStatus() {
   $('turn').textContent = S.game_over ? 'partie terminée' : (S.battle_round ? `tour : ${SIDE_FR[S.side_to_move]}` : '');
   $('steplabel').style.display = (S.vs_bot && me) ? '' : 'none';
   $('undobtn').style.display = me ? '' : 'none';
+  $('histbtn').style.display = '';
   $('undobtn').disabled = !S.can_undo;
   $('histbtn').textContent = `Historique (${S.history_length || 0})`;
   document.title = (humanTurn() ? '● À toi — ' : '') + ((S.game && S.game.title) || '40kPlayer');
@@ -697,6 +700,54 @@ function showUnit(u) {
   if (!u) { box.innerHTML = HELP; return; }
   const f = u.flags; const flags = [f.engaged && 'engagée', f.advanced && 'a avancé', f.fell_back && 'repliée', f.charged && 'a chargé', f.battle_shocked && 'battle-shock', f.has_shot && 'a tiré', f.has_fought && 'a combattu'].filter(Boolean).join(', ');
   box.innerHTML = `<b>${u.name} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}<br>armes : ${u.weapons.join(', ')}${flags ? '<br>' + flags : ''}${u.passengers && u.passengers.length ? '<br>à bord : ' + u.passengers.map(id => `${unitById(id).name} [${id}]`).join(', ') : ''}${u.embarked_in ? '<br>à bord de ' + u.embarked_in : ''}`;
+}
+
+// ------------------------------------------------------------ partie en attente du second joueur
+async function renderWaiting(st) {
+  const key = JSON.stringify([st.you, st.can_join, st.join && st.join.code, st.players]);
+  if (view.waitingKey === key) return;  // rien n'a changé : on ne réécrit pas le formulaire en cours de saisie
+  view.waitingKey = key;
+  const P = st.players, open = st.open_side, mine = st.you;
+  $('title').innerHTML = `${esc((st.game && st.game.title) || '40kPlayer')} <span class="pill">en attente</span>`;
+  $('nameA').textContent = P.attacker && P.attacker.name ? `${P.attacker.name} — attaquant` : 'Attaquant (en attente)';
+  $('nameD').textContent = P.defender && P.defender.name ? `${P.defender.name} — défenseur` : 'Défenseur (en attente)';
+  ['undobtn', 'histbtn', 'steplabel'].forEach(id => { $(id).style.display = 'none'; });
+  const box = $('dbtns'); box.innerHTML = ''; $('extra').innerHTML = ''; $('dobs').textContent = '';
+  if (st.join) {
+    // le créateur : code à donner, ou lien d'invitation
+    const invite = location.origin + st.join.invite;
+    $('dtitle').textContent = 'En attente de ton adversaire';
+    $('dhint').innerHTML = `Donne-lui le <b>code de partie</b> à taper sur l’accueil (« Rejoindre une partie ») :<div style="font:700 28px/1.2 ui-monospace,Menlo,monospace;letter-spacing:3px;color:var(--accent);margin:8px 0">${esc(st.join.code)}</div>ou envoie-lui le lien d’invitation. Il choisira sa liste en rejoignant ; la partie démarre aussitôt, cette page se met à jour toute seule.`;
+    box.appendChild(btn('Copier le code', () => navigator.clipboard.writeText(st.join.code).catch(() => prompt('Code :', st.join.code))));
+    box.appendChild(btn('Copier le lien d’invitation', () => navigator.clipboard.writeText(invite).catch(() => prompt('Lien :', invite))));
+    rememberWaiting(st);
+  } else if (st.can_join) {
+    $('dtitle').textContent = `Rejoindre la partie — tu joues ${SIDE_FR[open]}`;
+    const other = P[open === 'attacker' ? 'defender' : 'attacker'];
+    $('dhint').innerHTML = `${esc(other.name || 'Ton adversaire')} t’a invité. Choisis ton nom et ta liste, puis rejoins : la partie démarre.`;
+    const lists = (await getJSON('/api/lists')).lists || [];
+    $('dhint').innerHTML += `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
+      <input id="joinname" type="text" placeholder="ton nom" size="16" style="background:#1a1b1e;color:var(--ink);border:1px solid #555;border-radius:5px;padding:5px 7px">
+      <select id="joinlist" style="background:#1a1b1e;color:var(--ink);border:1px solid #555;border-radius:5px;padding:5px 7px;max-width:100%">
+        <option value="">Toy model (roster de test)</option>${lists.filter(l => !l.error).map(l => `<option value="${esc(l.name)}">${esc(l.name)} — ${esc(l.faction)}, ${l.points} pts</option>`).join('')}</select></div>
+      <div class="hint" style="margin-top:6px">Ta liste n’y est pas ? Importe-la d’abord sur l’accueil (section « Importer une liste »), puis reviens sur ce lien.</div>`;
+    box.appendChild(btn('Rejoindre la partie', async () => {
+      const res = await postJSON(withT(API + '/join'), { name: $('joinname').value, list: $('joinlist').value || null });
+      if (!res.ok) { $('error').textContent = res.error || 'refusé'; return; }
+      location.href = res.link;
+    }, 'primary'));
+  } else {
+    $('dtitle').textContent = 'Partie en attente d’un second joueur';
+    $('dhint').textContent = 'Elle démarrera quand l’adversaire aura rejoint avec le code de partie.';
+  }
+}
+function rememberWaiting(st) {
+  try {
+    const all = JSON.parse(localStorage.getItem('fortyk.mygames') || '[]');
+    const link = location.pathname + location.search;
+    const item = { id: GID, side: st.you, link, title: (st.game && st.game.title) || GID, seen: new Date().toISOString() };
+    localStorage.setItem('fortyk.mygames', JSON.stringify([item, ...all.filter(g => !(g.id === GID && g.side === st.you))].slice(0, 100)));
+  } catch (e) { /* stockage indisponible */ }
 }
 
 // ------------------------------------------------------------ annulation, historique, mémoire locale

@@ -29,7 +29,7 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..agents import RandomAgent
 from ..data import Catalog
@@ -57,7 +57,8 @@ from ..engine.state import SIDES, GameState, other_side
 from ..training import build_initial_state, iter_replay
 from .serialize import action_label, decision_to_json, factions_of, layout_to_json, state_to_json
 
-__all__ = ["FORMAT", "GameStore", "Room", "Rooms", "RoomError", "decode_action", "build_initial_state", "public_record"]
+__all__ = ["FORMAT", "GameStore", "Room", "Rooms", "RoomError", "RoomWaiting", "decode_action", "build_initial_state", "public_record",
+           "waiting_snapshot", "normalize_code", "format_code", "new_record"]
 
 FORMAT = "fortyk-game/2"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,40}$")
@@ -139,11 +140,63 @@ def decode_action(decision: Decision, payload: Dict[str, Any]):
 # ------------------------------------------------------------------ document
 
 
+JOIN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  #: sans 0/O ni 1/I : se dicte sans ambiguïté
+
+
+def new_join_code() -> str:
+    return "".join(secrets.choice(JOIN_ALPHABET) for _ in range(6))
+
+
+def normalize_code(code: Optional[str]) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (code or "").upper())
+
+
+def format_code(code: str) -> str:
+    return f"{code[:3]}-{code[3:]}" if len(code) == 6 else code
+
+
+def new_record(store: Optional["GameStore"], lists: Dict[str, Optional[Dict[str, str]]], players: Dict[str, Dict[str, Any]],
+               title: Optional[str] = None, seed: Optional[int] = None, layout: str = "layout_a") -> Dict[str, Any]:
+    """Document d'une nouvelle partie (jetons des joueurs humains compris)."""
+    gid = store.new_id() if store is not None else secrets.token_urlsafe(6)
+    seed = secrets.randbelow(2**31) if seed is None else int(seed)
+    pl = {}
+    for side in SIDES:
+        p = players.get(side) or {"kind": "human"}
+        kind = p.get("kind", "human")
+        if kind not in ("human", "bot"):
+            raise RoomError(f"type de joueur inconnu : {kind}")
+        name = (p.get("name") or "").strip()[:40] or ("Bot aléatoire" if kind == "bot" else SIDE_FR[side].capitalize())
+        pl[side] = {"kind": kind, "name": name, "token": secrets.token_urlsafe(18) if kind == "human" else None, "step_mode": True}
+    if not any(p["kind"] == "human" for p in pl.values()):
+        raise RoomError("il faut au moins un joueur humain")
+    title = (title or "").strip()[:80] or None
+    return {
+        "format": FORMAT,
+        "id": gid,
+        "title": title,
+        "title_auto": title is None,
+        "created": _now(),
+        "updated": _now(),
+        "config": {"layout": layout, "seed": seed, "deploy": True, "dice_after_undo": "new",
+                   "lists": {side: (dict(lists[side]) if lists.get(side) else None) for side in SIDES}},
+        "players": pl,
+        "history": [],
+        "reseeds": [],
+        "undos": [],
+        "timeline": 0,
+        "status": "active",
+        "result": None,
+        "summary": {},
+    }
+
+
 def public_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """Le document de partie sans les jetons secrets (téléchargement, liste des parties)."""
     doc = json.loads(json.dumps(record))
     for p in doc.get("players", {}).values():
         p.pop("token", None)
+    doc.pop("join", None)  # le code de partie ne sert qu'à l'invité
     return doc
 
 
@@ -187,6 +240,20 @@ class GameStore:
             raise RoomError(f"format de partie inconnu : {doc.get('format')}")
         return doc
 
+    def find_join(self, code: str) -> Optional[Dict[str, Any]]:
+        """Partie en attente d'un adversaire dont le code de partie est ``code`` (déjà normalisé)."""
+        if len(code) != 6:
+            return None
+        for path in self.directory.glob("*.json"):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            join = doc.get("join") or {}
+            if doc.get("status") == "waiting" and join.get("code") and hmac.compare_digest(join["code"], code):
+                return doc
+        return None
+
     def summaries(self) -> List[Dict[str, Any]]:
         """Résumé de chaque partie (sans jeton), la plus récente d'abord ; lu une fois par version du fichier."""
         out = []
@@ -212,7 +279,8 @@ def _summary_of(doc: Dict[str, Any]) -> Dict[str, Any]:
         "created": doc.get("created"),
         "updated": doc.get("updated"),
         "status": doc.get("status"),
-        "players": {side: {"kind": p.get("kind"), "name": p.get("name")} for side, p in doc.get("players", {}).items()},
+        "players": {side: {"kind": p.get("kind"), "name": p.get("name") or None} for side, p in doc.get("players", {}).items()},
+        "open_side": (doc.get("join") or {}).get("side"),
         "lists": {side: (l or {}).get("name") for side, l in (doc.get("config", {}).get("lists") or {}).items()},
         "actions": len(doc.get("history", [])),
         "undos": len(doc.get("undos", [])),
@@ -255,39 +323,12 @@ class Room:
     @classmethod
     def create(cls, cat: Catalog, store: Optional[GameStore], lists: Dict[str, Optional[Dict[str, str]]], players: Dict[str, Dict[str, Any]],
                title: Optional[str] = None, seed: Optional[int] = None, layout: str = "layout_a") -> "Room":
-        """Nouvelle partie. ``lists[side]`` = {"name", "text"} ou None (toy model) ; ``players[side]`` =
-        {"kind": "human" | "bot", "name"}. Les humains reçoivent un jeton secret (leur lien)."""
-        gid = store.new_id() if store is not None else secrets.token_urlsafe(6)
-        seed = secrets.randbelow(2**31) if seed is None else int(seed)
-        pl = {}
-        for side in SIDES:
-            p = players.get(side) or {"kind": "human"}
-            kind = p.get("kind", "human")
-            if kind not in ("human", "bot"):
-                raise RoomError(f"type de joueur inconnu : {kind}")
-            name = (p.get("name") or "").strip()[:40] or ("Bot aléatoire" if kind == "bot" else SIDE_FR[side].capitalize())
-            pl[side] = {"kind": kind, "name": name, "token": secrets.token_urlsafe(18) if kind == "human" else None, "step_mode": True}
-        if not any(p["kind"] == "human" for p in pl.values()):
-            raise RoomError("il faut au moins un joueur humain")
-        record = {
-            "format": FORMAT,
-            "id": gid,
-            "title": (title or "").strip()[:80] or None,
-            "created": _now(),
-            "updated": _now(),
-            "config": {"layout": layout, "seed": seed, "deploy": True, "dice_after_undo": "new",
-                       "lists": {side: (dict(lists[side]) if lists.get(side) else None) for side in SIDES}},
-            "players": pl,
-            "history": [],
-            "reseeds": [],
-            "undos": [],
-            "timeline": 0,
-            "status": "active",
-            "result": None,
-            "summary": {},
-        }
+        """Nouvelle partie dont les deux listes sont connues. ``lists[side]`` = {"name", "text"} ou None
+        (toy model) ; ``players[side]`` = {"kind": "human" | "bot", "name"}. Les humains reçoivent un
+        jeton secret (leur lien)."""
+        record = new_record(store, lists, players, title, seed, layout)
         room = cls(cat, store, record)
-        if record["title"] is None:
+        if record.get("title_auto"):
             f = factions_of(room.state)
             record["title"] = f"{f.get('attacker', '?')} vs {f.get('defender', '?')}"
         room._changed()
@@ -550,6 +591,41 @@ class Room:
 # ------------------------------------------------------------------ registre des salles
 
 
+class RoomWaiting(RoomError):
+    """La partie attend encore son second joueur (pas encore de plateau)."""
+
+    def __init__(self, record: Dict[str, Any]):
+        super().__init__("la partie attend son second joueur")
+        self.record = record
+
+
+def waiting_snapshot(record: Dict[str, Any], token: Optional[str]) -> Dict[str, Any]:
+    """État d'une partie en attente, vu par le détenteur de ``token`` (créateur, invité ou spectateur)."""
+    join = record.get("join") or {}
+    open_side = join.get("side")
+    viewer = None
+    for side, p in record["players"].items():
+        if token and p.get("token") and hmac.compare_digest(p["token"], token):
+            viewer = side
+    creator = other_side(open_side) if open_side else None
+    snap = {
+        "ok": True,
+        "waiting": True,
+        "game": {"id": record["id"], "title": record.get("title"), "created": record.get("created")},
+        "players": {side: {"kind": p["kind"], "name": p.get("name") or None} for side, p in record["players"].items()},
+        "lists": {side: (l or {}).get("name") for side, l in record["config"]["lists"].items()},
+        "you": viewer,
+        "open_side": open_side,
+        "can_join": viewer is not None and viewer == open_side,
+        "join": None,
+        "timeline": 0,
+        "version": 0,
+    }
+    if viewer is not None and viewer == creator:
+        snap["join"] = {"code": format_code(join["code"]), "invite": f"/g/{record['id']}?t={record['players'][open_side]['token']}"}
+    return snap
+
+
 class Rooms:
     """Salles chargées à la demande depuis le stockage (une seule instance par partie)."""
 
@@ -557,13 +633,17 @@ class Rooms:
         self.cat = cat
         self.store = store
         self._rooms: Dict[str, Room] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def get(self, gid: str) -> Room:
+        """La salle de la partie ; :class:`RoomWaiting` si elle attend encore son second joueur."""
         with self._lock:
             room = self._rooms.get(gid)
             if room is None:
-                room = Room(self.cat, self.store, self.store.load(gid))
+                record = self.store.load(gid)
+                if record.get("status") == "waiting":
+                    raise RoomWaiting(record)
+                room = Room(self.cat, self.store, record)
                 self._rooms[gid] = room
             return room
 
@@ -572,3 +652,60 @@ class Rooms:
         with self._lock:
             self._rooms[room.record["id"]] = room
         return room
+
+    def open_game(self, side: str, name: str, list_ref: Optional[Dict[str, str]], title: Optional[str] = None,
+                  seed: Optional[int] = None, layout: str = "layout_a") -> Dict[str, Any]:
+        """Partie contre un adversaire humain qui n'a pas encore rejoint : le créateur joue ``side``
+        avec sa liste ; l'adversaire rejoindra avec le code de partie (ou le lien d'invitation) et
+        choisira alors sa propre liste. Le plateau est construit à ce moment-là."""
+        from ..data.list_library import resolve_text
+
+        if side not in SIDES:
+            raise RoomError(f"camp inconnu : {side}")
+        other = other_side(side)
+        if list_ref and list_ref.get("text"):
+            try:
+                faction = resolve_text(list_ref["text"], self.cat).faction_name
+            except Exception as err:  # noqa: BLE001
+                raise RoomError(f"liste illisible : {err}") from err
+        else:
+            faction = "Space Marines" if side == "attacker" else "Emperor’s Children"  # rosters du toy model
+        record = new_record(self.store, {side: list_ref, other: None}, {side: {"kind": "human", "name": name}, other: {"kind": "human", "name": ""}},
+                            title=title, seed=seed, layout=layout)
+        record["players"][other]["name"] = ""
+        record["status"] = "waiting"
+        record["config"]["awaiting"] = other
+        record["join"] = {"code": new_join_code(), "side": other}
+        if record["title_auto"]:
+            record["title"] = f"{faction} vs ?" if side == "attacker" else f"? vs {faction}"
+        self.store.save(record)
+        return record
+
+    def join(self, record: Dict[str, Any], name: str, list_ref: Optional[Dict[str, str]]) -> Tuple[str, str, Room]:
+        """L'adversaire rejoint une partie en attente : son nom, sa liste ; la partie démarre.
+        Retourne (camp, jeton, salle)."""
+        with self._lock:
+            current = self.store.load(record["id"])  # relu sous verrou : deux adversaires ne peuvent pas rejoindre
+            if current.get("status") != "waiting":
+                raise RoomError("cette partie a déjà ses deux joueurs")
+            rec = json.loads(json.dumps(current))
+            side = rec["join"]["side"]
+            rec["players"][side]["name"] = (name or "").strip()[:40] or SIDE_FR[side].capitalize()
+            rec["config"]["lists"][side] = dict(list_ref) if list_ref else None
+            rec["config"].pop("awaiting", None)
+            rec.pop("join", None)
+            rec["status"] = "active"
+            rec["joined"] = _now()
+            try:
+                room = Room(self.cat, self.store, rec)
+            except RoomError:
+                raise
+            except Exception as err:  # noqa: BLE001 — liste illisible, déploiement impossible…
+                traceback.print_exc()
+                raise RoomError(f"{type(err).__name__}: {err}") from err
+            if rec.get("title_auto"):
+                f = factions_of(room.state)
+                rec["title"] = f"{f.get('attacker', '?')} vs {f.get('defender', '?')}"
+            room._changed()
+            self._rooms[rec["id"]] = room
+            return side, rec["players"][side]["token"], room

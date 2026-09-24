@@ -1,7 +1,7 @@
 # 40kPlayer — service web (parties à deux sauvegardées, annulation, journaux JSON pour l'entraînement)
 #
 #   docker build -t 40kplayer .
-#   docker run -p 8040:8040 -v fortyk-data:/data -e FORTYK_ACCESS_CODE=secret 40kplayer
+#   docker run -p 8040:8040 -v fortyk-data:/data 40kplayer
 #
 # Les parties (un JSON par partie) et les listes importées vont dans le volume /data.
 FROM python:3.12-slim

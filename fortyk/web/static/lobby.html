@@ -30,7 +30,7 @@
   td { border-bottom:1px solid #333; padding:6px; vertical-align:top; }
   td .sub { color:var(--muted); font-size:12px; }
   .pill { display:inline-block; padding:0 7px; border-radius:10px; font-size:12px; background:#444; }
-  .pill.active { background:#2f6b3a; } .pill.finished { background:#555; }
+  .pill.active { background:#2f6b3a; } .pill.finished { background:#555; } .pill.waiting { background:#7a5a14; }
   .links .lk { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
   .links code { background:#1a1b1e; border:1px solid #444; border-radius:4px; padding:3px 6px; font-size:12px; word-break:break-all; }
   #created { display:none; margin-top:12px; padding:10px 12px; background:var(--panel2); border-radius:6px; border:1px solid #3f8f4f; }
@@ -42,21 +42,28 @@
 <main>
 <header>
   <h1>40kPlayer</h1>
-  <p>Warhammer 40,000 V11 en 2D — parties à deux (chacun son lien secret) ou contre le bot, sauvegardées et annulables. Chaque partie est enregistrée en JSON pour entraîner l’IA.</p>
+  <p>Warhammer 40,000 V11 en 2D — parties à deux ou contre le bot, sauvegardées et annulables. Tu crées la partie avec ta liste, ton adversaire la rejoint avec le code de partie et sa propre liste. Chaque partie est enregistrée en JSON pour entraîner l’IA.</p>
 </header>
 
 <section>
   <h2>Nouvelle partie</h2>
+  <div class="row"><span class="lab">Ton nom</span><input type="text" id="myname" size="18" placeholder="ton nom de joueur">
+    <span class="lab" style="width:auto;margin-left:10px">Ton camp</span><select id="myside"><option value="attacker">attaquant</option><option value="defender">défenseur</option></select></div>
+  <div class="row"><span class="lab">Ta liste</span><select class="list" id="mylist"></select></div>
+  <div class="row"><span class="lab">Adversaire</span><select id="opp"><option value="human">un joueur (il rejoint avec le code de partie)</option><option value="bot">le bot aléatoire</option></select>
+    <select class="list" id="botlist" style="display:none"></select></div>
   <div class="row"><span class="lab">Titre</span><input type="text" id="title" size="44" placeholder="facultatif (par défaut : les deux factions)"></div>
-  <div class="row"><span class="lab side-att">Attaquant</span><select class="list" id="listA"></select>
-    <select id="kindA"><option value="human">humain</option><option value="bot">bot aléatoire</option></select>
-    <input type="text" id="nameA" size="16" placeholder="nom du joueur"></div>
-  <div class="row"><span class="lab side-def">Défenseur</span><select class="list" id="listD"></select>
-    <select id="kindD"><option value="human">humain</option><option value="bot">bot aléatoire</option></select>
-    <input type="text" id="nameD" size="16" placeholder="nom du joueur"></div>
-  <div class="row" id="coderow" style="display:none"><span class="lab">Code d’accès</span><input type="password" id="code" size="18"> <span class="hint">demandé par ce serveur pour créer une partie (mémorisé dans ce navigateur)</span></div>
   <div class="row"><button class="primary" id="create">Créer la partie</button><span id="createmsg" class="hint"></span></div>
   <div id="created"></div>
+</section>
+
+<section>
+  <h2>Rejoindre une partie</h2>
+  <div class="hint" style="margin-bottom:6px">Avec le code que t’a donné le créateur de la partie. Tu choisis ta liste ; la partie démarre dès que tu as rejoint.</div>
+  <div class="row"><span class="lab">Code</span><input type="text" id="jcode" size="10" placeholder="K7F-3QX" style="text-transform:uppercase;letter-spacing:2px;font-family:ui-monospace,Menlo,monospace">
+    <span class="lab" style="width:auto;margin-left:10px">Ton nom</span><input type="text" id="jname" size="18" placeholder="ton nom de joueur"></div>
+  <div class="row"><span class="lab">Ta liste</span><select class="list" id="jlist"></select></div>
+  <div class="row"><button class="primary" id="join">Rejoindre</button><span id="joinmsg" class="hint"></span></div>
 </section>
 
 <section>
@@ -92,18 +99,16 @@ const store = {
 async function getJSON(url) { const r = await fetch(url); return r.json(); }
 async function postJSON(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return r.json(); }
 const abs = link => location.origin + link;
-let config = { access_code_required: false }, summaries = [];
+let config = {}, summaries = [];
 
 async function loadLists(keep) {
   const data = await getJSON('/api/lists');
   const opts = ['<option value="">Toy model (roster de test)</option>'].concat(data.lists.map(l => l.error
     ? `<option value="${esc(l.name)}" disabled>${esc(l.name)} — illisible</option>`
     : `<option value="${esc(l.name)}">${esc(l.name)} — ${esc(l.faction)}, ${l.points} pts${l.issues ? ` (${l.issues} à vérifier)` : ''}</option>`)).join('');
-  const a = keep ? $('listA').value : store.get('fortyk.listA', ''), d = keep ? $('listD').value : store.get('fortyk.listD', '');
-  $('listA').innerHTML = opts; $('listD').innerHTML = opts;
-  $('listA').value = a; $('listD').value = d;
-  if ($('listA').value !== a) $('listA').value = '';
-  if ($('listD').value !== d) $('listD').value = '';
+  const ids = ['mylist', 'botlist', 'jlist'];
+  const prev = Object.fromEntries(ids.map(id => [id, keep ? $(id).value : store.get('fortyk.' + id, '')]));
+  ids.forEach(id => { $(id).innerHTML = opts; $(id).value = prev[id]; if ($(id).value !== prev[id]) $(id).value = ''; });
 }
 
 function when(iso) {
@@ -114,15 +119,17 @@ function when(iso) {
   if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
   return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
 }
+const STATUS_FR = { active: 'en cours', finished: 'terminée', waiting: 'en attente' };
 function stateLine(g) {
   if (!g) return '';
+  if (g.status === 'waiting') return `en attente de l’${SIDE_FR[g.open_side] || 'adversaire'}`;
   const where = g.round ? `round ${g.round}, ${PHASE_FR[g.phase] || g.phase}` : (PHASE_FR[g.phase] || g.phase || '');
   const sc = g.scores ? ` — ${g.scores.attacker} / ${g.scores.defender} VP` : '';
   return `${where}${sc}`;
 }
 function playersLine(g) {
   const p = g.players || {};
-  const one = side => p[side] ? `<span class="${side === 'attacker' ? 'side-att' : 'side-def'}">${esc(p[side].name)}${p[side].kind === 'bot' ? ' (bot)' : ''}</span>` : '';
+  const one = side => p[side] ? `<span class="${side === 'attacker' ? 'side-att' : 'side-def'}">${p[side].name ? esc(p[side].name) : '<i>en attente</i>'}${p[side].kind === 'bot' ? ' (bot)' : ''}</span>` : '';
   return `${one('attacker')} contre ${one('defender')}`;
 }
 
@@ -132,8 +139,8 @@ function renderMine() {
   if (!mine.length) { $('mine').innerHTML = '<div class="hint">Aucune pour l’instant.</div>'; return; }
   const rows = mine.map(m => {
     const g = byId[m.id];
-    const status = g ? `<span class="pill ${g.status}">${g.status === 'finished' ? 'terminée' : 'en cours'}</span>` : '<span class="pill">introuvable</span>';
-    const turn = g && g.status !== 'finished' && g.to_move ? (g.to_move === m.side ? ' — <b class="ok">à toi</b>' : ` — au tour ${g.to_move === 'attacker' ? 'de l’attaquant' : 'du défenseur'}`) : '';
+    const status = g ? `<span class="pill ${g.status}">${STATUS_FR[g.status] || g.status}</span>` : '<span class="pill">introuvable</span>';
+    const turn = g && g.status === 'active' && g.to_move ? (g.to_move === m.side ? ' — <b class="ok">à toi</b>' : ` — au tour ${g.to_move === 'attacker' ? 'de l’attaquant' : 'du défenseur'}`) : '';
     return `<tr><td><b>${esc(g ? g.title : m.title)}</b><div class="sub">tu joues ${SIDE_FR[m.side]}${g ? ' · ' + playersLine(g) : ''}</div></td>
       <td>${status}<div class="sub">${esc(stateLine(g))}${turn}</div></td><td class="sub">${esc(when(g ? g.updated : m.seen))}</td>
       <td><a class="btn primary" href="${esc(m.link)}">Reprendre</a> <button data-copy="${esc(abs(m.link))}" data-label="Copier mon lien">Copier mon lien</button></td></tr>`;
@@ -145,7 +152,7 @@ function renderMine() {
 function renderGames() {
   if (!summaries.length) { $('games').innerHTML = '<div class="hint">Aucune partie sur ce serveur.</div>'; return; }
   const rows = summaries.map(g => `<tr><td><b>${esc(g.title)}</b><div class="sub">${playersLine(g)}</div></td>
-    <td><span class="pill ${g.status}">${g.status === 'finished' ? 'terminée' : 'en cours'}</span><div class="sub">${esc(stateLine(g))}</div></td>
+    <td><span class="pill ${g.status}">${STATUS_FR[g.status] || g.status}</span><div class="sub">${esc(stateLine(g))}</div></td>
     <td class="sub">${g.actions} actions${g.undos ? `, ${g.undos} annulation(s)` : ''}<br>${esc(when(g.updated))}</td>
     <td><a class="btn" href="/g/${esc(g.id)}">Regarder</a> <a class="btn" href="/api/g/${esc(g.id)}/record">JSON</a> <a class="btn" href="/api/g/${esc(g.id)}/export" title="états avant chaque décision, pour l’entraînement">Entraînement</a></td></tr>`).join('');
   $('games').innerHTML = `<table><tr><th>Partie</th><th>État</th><th>Activité</th><th></th></tr>${rows}</table>
@@ -165,34 +172,46 @@ async function refresh() {
   renderMine(); renderGames();
 }
 
+$('opp').addEventListener('change', () => { $('botlist').style.display = $('opp').value === 'bot' ? '' : 'none'; });
+function remember(id, side, link, title) {
+  const mine = store.get('fortyk.mygames', []).filter(g => !(g.id === id && g.side === side));
+  store.set('fortyk.mygames', [{ id, side, link, title, seen: new Date().toISOString() }, ...mine].slice(0, 100));
+}
 $('create').addEventListener('click', async () => {
-  $('createmsg').textContent = 'Création… (lecture des listes, préparation du plateau)';
-  const code = $('code').value;
-  if (code) store.set('fortyk.code', code);
-  store.set('fortyk.listA', $('listA').value); store.set('fortyk.listD', $('listD').value);
-  const body = {
-    title: $('title').value,
-    lists: { attacker: $('listA').value || null, defender: $('listD').value || null },
-    players: { attacker: { kind: $('kindA').value, name: $('nameA').value }, defender: { kind: $('kindD').value, name: $('nameD').value } },
-    access_code: code,
-  };
-  const res = await postJSON('/api/games', body);
+  $('createmsg').textContent = 'Création… (lecture de la liste, préparation)';
+  ['mylist', 'botlist'].forEach(id => store.set('fortyk.' + id, $(id).value));
+  if ($('myname').value) store.set('fortyk.name', $('myname').value);
+  const side = $('myside').value, bot = $('opp').value === 'bot';
+  const res = await postJSON('/api/games', {
+    title: $('title').value, side, name: $('myname').value, list: $('mylist').value || null,
+    opponent: bot ? { kind: 'bot', list: $('botlist').value || null } : { kind: 'human' },
+  });
   if (!res.ok) { $('createmsg').innerHTML = `<span class="bad">${esc(res.error)}</span>`; return; }
   $('createmsg').textContent = '';
-  const mine = store.get('fortyk.mygames', []);
-  const lines = Object.entries(res.links).map(([side, link]) => {
-    mine.unshift({ id: res.id, side, link, title: res.title, seen: new Date().toISOString() });
-    const who = res.players[side].name;
-    return `<div class="lk"><span class="${side === 'attacker' ? 'side-att' : 'side-def'}" style="width:170px">${esc(who)} — ${SIDE_FR[side]}</span>
-      <code>${esc(abs(link))}</code><button data-copy="${esc(abs(link))}">Copier</button><a class="btn primary" href="${esc(link)}">Jouer ce camp</a></div>`;
-  }).join('');
-  store.set('fortyk.mygames', mine.slice(0, 100));
-  $('created').innerHTML = `<b>Partie créée : ${esc(res.title)}</b><div class="links">${lines}
-    <div class="lk"><span style="width:170px" class="hint">spectateurs</span><code>${esc(abs(res.spectate))}</code><button data-copy="${esc(abs(res.spectate))}">Copier</button></div></div>
-    <div class="hint">Envoie à ton adversaire le lien de son camp (il ne donne accès qu’à ce camp). Garde le tien : il rouvre la partie là où elle en est, depuis n’importe quel appareil.</div>`;
+  const link = res.links[side];
+  remember(res.id, side, link, res.title);
+  let html = `<b>Partie créée : ${esc(res.title)}</b>`;
+  if (res.join) {
+    const invite = abs(res.join.invite);
+    html += `<div style="margin:10px 0 4px">Donne à ton adversaire le <b>code de partie</b> — il le tape dans « Rejoindre une partie » et choisit sa liste :</div>
+      <div style="font:700 30px/1.2 ui-monospace,Menlo,monospace;letter-spacing:4px;color:var(--accent)">${esc(res.join.code)}</div>
+      <div class="links"><div class="lk"><span class="hint" style="width:150px">ou le lien d’invitation</span><code>${esc(invite)}</code><button data-copy="${esc(invite)}">Copier</button></div>`;
+  } else html += '<div class="links">';
+  html += `<div class="lk"><span class="hint" style="width:150px">ton lien (${SIDE_FR[side]})</span><code>${esc(abs(link))}</code><button data-copy="${esc(abs(link))}">Copier</button><a class="btn primary" href="${esc(link)}">${res.join ? 'Ouvrir la partie' : 'Jouer'}</a></div></div>
+    <div class="hint">Garde ton lien : il rouvre la partie là où elle en est, depuis n’importe quel appareil (elle est aussi dans « Mes parties » sur ce navigateur).</div>`;
+  $('created').innerHTML = html;
   $('created').style.display = 'block';
   bindCopy($('created'));
   refresh();
+});
+$('join').addEventListener('click', async () => {
+  $('joinmsg').textContent = 'Connexion à la partie…';
+  store.set('fortyk.jlist', $('jlist').value);
+  if ($('jname').value) store.set('fortyk.name', $('jname').value);
+  const res = await postJSON('/api/join', { code: $('jcode').value, name: $('jname').value, list: $('jlist').value || null });
+  if (!res.ok) { $('joinmsg').innerHTML = `<span class="bad">${esc(res.error)}</span>`; return; }
+  remember(res.id, res.side, res.link, res.title);
+  location.href = res.link;
 });
 
 function showReport(res) {
@@ -209,14 +228,15 @@ function showReport(res) {
 $('check').addEventListener('click', async () => { $('report').textContent = 'Résolution…'; showReport(await postJSON('/api/lists/preview', { text: $('listtext').value })); });
 $('save').addEventListener('click', async () => {
   $('report').textContent = 'Enregistrement…';
-  const res = await postJSON('/api/lists/save', { text: $('listtext').value, name: $('listname').value, access_code: $('code').value || store.get('fortyk.code', '') });
+  const res = await postJSON('/api/lists/save', { text: $('listtext').value, name: $('listname').value });
   showReport(res);
   if (res.ok) { await loadLists(true); $('report').innerHTML += `<br><span class="ok">Enregistrée sous « ${esc(res.name)} » : elle est dans les menus de nouvelle partie.</span>`; }
 });
 
 (async () => {
   try { config = await getJSON('/api/config'); } catch (e) { /* ancien serveur */ }
-  if (config.access_code_required) { $('coderow').style.display = ''; $('code').value = store.get('fortyk.code', ''); }
+  const nm = store.get('fortyk.name', ''); if (nm) { $('myname').value = nm; $('jname').value = nm; }
+  const q = new URLSearchParams(location.search).get('code'); if (q) $('jcode').value = q;
   await loadLists(false);
   await refresh();
   setInterval(refresh, 15000);

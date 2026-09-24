@@ -155,10 +155,14 @@ python3 scripts/bench.py --games 50                 # vitesse du moteur (parties
 
 `python3 scripts/serve.py` lance le service (bibliothèque standard, pas de dépendance) et ouvre l'accueil :
 
-- **Nouvelle partie** : une liste par camp (ou le toy model), chaque camp joué par un humain ou par le bot.
-  À la création, chaque joueur humain reçoit un **lien secret** `/g/<partie>?t=<jeton>` qui ne donne accès
-  qu'à son camp : envoie le sien à ton adversaire. Sans jeton, le lien `/g/<partie>` est celui des
-  spectateurs. Il n'y a pas de compte : le lien suffit, depuis n'importe quel appareil.
+- **Nouvelle partie** : ton nom, ton camp, ta liste (ou le toy model), et l'adversaire — le bot (tu choisis
+  sa liste, la partie démarre tout de suite) ou un joueur. Contre un joueur, tu reçois un **code de partie**
+  (`K7F-3QX`, sans 0/O ni 1/I pour se dicter facilement) et un lien d'invitation ; la partie attend.
+- **Rejoindre une partie** : l'adversaire tape le code sur l'accueil (ou ouvre le lien d'invitation), donne
+  son nom et **choisit sa propre liste** ; la partie démarre aussitôt (la page du créateur se met à jour
+  toute seule). Le code ne sert qu'une fois.
+- Chaque joueur a son **lien secret** `/g/<partie>?t=<jeton>`, qui ne donne accès qu'à son camp et rouvre la
+  partie depuis n'importe quel appareil ; sans jeton, `/g/<partie>` est le lien des spectateurs. Pas de compte.
 - **Mes parties** (mémorisées par le navigateur) et **toutes les parties** du serveur : état, round, score,
   à qui de jouer ; « Reprendre » rouvre la partie là où elle en était.
 - **Importer une liste** : coller l'export texte NewRecruit, vérifier (points recalculés, points à vérifier,
@@ -186,9 +190,9 @@ repli ordonné ou Desperate Escape quand tu es engagé ; tir, charge, combat et 
 l'unité ennemie ; R / Maj + R pivote une coque ; Échap annule le glissement en cours. Les unités qui ne
 peuvent pas agir sont listées avec la raison.
 
-Options : `--host 0.0.0.0` (réseau local), `--port`, `--data-dir`, `--access-code` (ou `FORTYK_ACCESS_CODE` :
-code demandé pour créer une partie ou enregistrer une liste — conseillé sur un serveur public),
-`--vs-bot --side defender --attacker-list <nom>` (partie immédiate contre le bot).
+Options : `--host 0.0.0.0` (réseau local), `--port`, `--data-dir`,
+`--vs-bot --side defender --attacker-list <nom>` (partie immédiate contre le bot). N'importe qui ayant
+l'adresse du service peut créer une partie : c'est le code de partie qui protège l'entrée d'un adversaire.
 
 ### Données d'entraînement
 
@@ -210,7 +214,7 @@ Le dépôt contient un `Dockerfile` (Python 3.12 slim + numpy ; fiches Wahapedia
 l'image ; utilisateur non root ; healthcheck `/healthz`) et un `docker-compose.yml`. Dans Dokploy :
 
 1. **Create Application** → source GitHub (le dépôt 40kPlayer, branche principale) → Build Type **Dockerfile**.
-2. **Environment** : `FORTYK_ACCESS_CODE=<un code>` (sinon n'importe qui peut créer des parties).
+2. Aucune variable d'environnement n'est nécessaire.
 3. **Advanced → Volumes** : un *Volume Mount* (volume nommé, par ex. `fortyk-data`) monté sur `/data` — c'est
    là que vivent les parties (`/data/games`) et les listes importées (`/data/lists`). Un volume nommé garde les
    bons droits pour l'utilisateur du conteneur ; avec un *Bind Mount*, donne le dossier à l'uid 10001.
@@ -218,7 +222,13 @@ l'image ; utilisateur non root ; healthcheck `/healthz`) et un `docker-compose.y
 5. **Deploy**. Pour récupérer les données d'entraînement : bouton « Entraînement » de chaque partie, ou
    `docker exec <conteneur> python scripts/export_games.py /data/games /data/parties.jsonl`.
 
-Variante *Compose* : Dokploy peut aussi utiliser `docker-compose.yml` (même volume et même variable).
+Variante *Compose* : Dokploy peut aussi utiliser `docker-compose.yml` (même volume).
+
+**Automatisé** : le workflow « Dokploy (test) » (`.github/workflows/dokploy.yml`, lancé depuis l'onglet
+Actions) fait tout cela par l'API de Dokploy avec `scripts/dokploy_setup.py` — projet `other`, application
+`40kplayer`, source GitHub, Dockerfile, volume `/data`, domaine (généré, ou celui passé en entrée), déploiement
+et contrôle de `/healthz` — à partir des secrets du dépôt `DOKPLOY_URL` et `DOKPLOY_API_KEY`. Relançable sans
+rien dupliquer. Dokploy redéploie ensuite tout seul à chaque push sur `main`.
 Les parties sont chargées en mémoire par un seul processus : ne pas lancer plusieurs réplicas.
 
 ### Jouer dans le terminal

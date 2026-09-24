@@ -11,8 +11,12 @@ Pages : ``/`` (accueil : parties, création, listes d'armée — ``static/lobby.
 API (JSON) :
 
 * ``GET /api/games`` — résumé des parties ; ``POST /api/games`` — nouvelle partie
-  ``{title, lists: {attacker, defender} (noms de listes, null = toy model), players: {side: {kind:
-  "human" | "bot", name}}, access_code}`` → liens des joueurs ;
+  ``{title, side, name, list, opponent: {kind: "human"} | {kind: "bot", list}}`` (``list`` : nom
+  d'une liste enregistrée, null = toy model) → lien du créateur, et contre un humain un **code de
+  partie** et un lien d'invitation (la partie attend l'adversaire, qui choisira sa liste). Ancienne
+  forme acceptée : ``{lists: {attacker, defender}, players: {side: {kind, name}}}`` (tous les liens) ;
+* ``POST /api/join`` ``{code, name, list}`` — rejoindre avec le code de partie → lien du joueur ;
+  ``POST /api/g/<id>/join?t=`` ``{name, list}`` — rejoindre avec le lien d'invitation ;
 * ``GET /api/g/<id>/layout`` · ``GET /api/g/<id>/state?t=&since=`` · ``GET /api/g/<id>/history`` ;
 * ``POST /api/g/<id>/action?t=`` — une action (protocole ci-dessous) ;
 * ``POST /api/g/<id>/undo?t=`` ``{to: index | null}`` — revenir avant l'action ``to`` (null : la
@@ -29,13 +33,11 @@ charge) / ``disembark_models`` avec ``positions: {model_id: [x, y] ou [x, y, ang
 ``skip`` ; ``select_unit`` (``unit_id``), ``end_phase`` ; ``fight`` (``unit_id``, ``target_id``) ;
 ``continue`` (pas à pas).
 
-Variables d'environnement : ``FORTYK_DATA_DIR`` (parties), ``FORTYK_LISTS_DIR`` (listes importées),
-``FORTYK_ACCESS_CODE`` (code demandé pour créer une partie ou enregistrer une liste), ``PORT``.
+Variables d'environnement : ``FORTYK_DATA_DIR`` (parties), ``FORTYK_LISTS_DIR`` (listes importées), ``PORT``.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import re
@@ -46,7 +48,10 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 from ..data import Catalog, load_catalog
-from .rooms import GameStore, Room, RoomError, Rooms, public_record
+from ..engine.layout import load_layout
+from ..engine.rules import DEFAULT_RULES
+from .rooms import GameStore, Room, RoomError, Rooms, RoomWaiting, normalize_code, public_record, waiting_snapshot
+from .serialize import layout_to_json
 
 __all__ = ["App", "make_handler", "serve", "STATIC_DIR"]
 
@@ -57,13 +62,13 @@ _PAGE_RE = re.compile(r"^/g/([A-Za-z0-9_-]{4,40})/?$")
 
 
 class App:
-    """État du service : catalogue Wahapedia, stockage des parties, salles chargées, code d'accès."""
+    """État du service : catalogue Wahapedia, stockage des parties, salles chargées."""
 
-    def __init__(self, cat: Catalog, data_dir=None, access_code: Optional[str] = None):
+    def __init__(self, cat: Catalog, data_dir=None):
         self.cat = cat
         self.store = GameStore(data_dir or os.environ.get("FORTYK_DATA_DIR") or DEFAULT_DATA_DIR)
         self.rooms = Rooms(cat, self.store)
-        self.access_code = access_code if access_code is not None else (os.environ.get("FORTYK_ACCESS_CODE") or None)
+        self._layouts: Dict[str, Any] = {}
 
     def storage_status(self) -> str:
         """« ok » si le dossier des parties est inscriptible (volume monté avec les bons droits)."""
@@ -75,24 +80,43 @@ class App:
         except OSError as err:
             return f"erreur : {err.strerror or err}"
 
-    def check_code(self, code: Optional[str]) -> None:
-        if self.access_code and not hmac.compare_digest(str(code or ""), self.access_code):
-            raise RoomError("code d'accès incorrect")
+    def layout_json(self, name: str) -> Dict[str, Any]:
+        if name not in self._layouts:
+            self._layouts[name] = layout_to_json(load_layout(name), DEFAULT_RULES)
+        return self._layouts[name]
 
-    def create_game(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def list_ref(self, name: Optional[str]) -> Optional[Dict[str, str]]:
+        """Nom d'une liste enregistrée → {"name", "text"} (None = toy model)."""
         from ..data.list_library import list_text
 
-        self.check_code(payload.get("access_code"))
-        lists = {}
-        for side in ("attacker", "defender"):
-            name = (payload.get("lists") or {}).get(side)
-            if name:
-                try:
-                    lists[side] = {"name": name, "text": list_text(name)}
-                except FileNotFoundError as err:
-                    raise RoomError(str(err)) from err
-            else:
-                lists[side] = None
+        if not name:
+            return None
+        try:
+            return {"name": name, "text": list_text(name)}
+        except FileNotFoundError as err:
+            raise RoomError(str(err)) from err
+
+    def create_game(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if "players" in payload:  # ancienne forme : les deux listes et tous les liens d'un coup
+            return self._create_full(payload)
+        side = payload.get("side") or "attacker"
+        mine = self.list_ref(payload.get("list"))
+        opponent = payload.get("opponent") or {"kind": "human"}
+        if opponent.get("kind") == "bot":
+            other = "defender" if side == "attacker" else "attacker"
+            return self._create_full({"title": payload.get("title"), "seed": payload.get("seed"),
+                                      "lists": {side: payload.get("list"), other: opponent.get("list")},
+                                      "players": {side: {"kind": "human", "name": payload.get("name")}, other: {"kind": "bot"}}})
+        rec = self.rooms.open_game(side, payload.get("name") or "", mine, title=payload.get("title"), seed=payload.get("seed"))
+        gid, other = rec["id"], rec["join"]["side"]
+        return {"ok": True, "id": gid, "title": rec["title"], "status": "waiting", "side": side,
+                "links": {side: f"/g/{gid}?t={rec['players'][side]['token']}"}, "spectate": f"/g/{gid}",
+                "join": {"code": waiting_snapshot(rec, rec["players"][side]["token"])["join"]["code"],
+                         "invite": f"/g/{gid}?t={rec['players'][other]['token']}", "side": other},
+                "players": {s_: {"kind": p["kind"], "name": p.get("name") or None} for s_, p in rec["players"].items()}}
+
+    def _create_full(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        lists = {side: self.list_ref((payload.get("lists") or {}).get(side)) for side in ("attacker", "defender")}
         try:
             room = self.rooms.create(lists=lists, players=payload.get("players") or {}, title=payload.get("title"), seed=payload.get("seed"))
         except RoomError:
@@ -103,8 +127,26 @@ class App:
         rec = room.record
         gid = rec["id"]
         links = {side: f"/g/{gid}?t={p['token']}" for side, p in rec["players"].items() if p.get("token")}
-        return {"ok": True, "id": gid, "title": rec["title"], "links": links, "spectate": f"/g/{gid}",
+        return {"ok": True, "id": gid, "title": rec["title"], "status": rec["status"], "links": links, "spectate": f"/g/{gid}",
                 "players": {side: {"kind": p["kind"], "name": p["name"]} for side, p in rec["players"].items()}}
+
+    def join_game(self, payload: Dict[str, Any], gid: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
+        """Rejoindre par le code de partie (accueil) ou par le lien d'invitation (``gid`` + ``token``)."""
+        if gid is not None:
+            rec = self.store.load(gid)
+            join = rec.get("join") or {}
+            if rec.get("status") != "waiting":
+                raise RoomError("cette partie a déjà ses deux joueurs")
+            expected = rec["players"][join["side"]]["token"]
+            if not token or token != expected:
+                raise RoomError("ce lien ne permet pas de rejoindre cette partie")
+        else:
+            rec = self.store.find_join(normalize_code(payload.get("code")))
+            if rec is None:
+                raise RoomError("code de partie inconnu (ou partie déjà complète)")
+        side, tok, room = self.rooms.join(rec, payload.get("name") or "", self.list_ref(payload.get("list")))
+        gid = room.record["id"]
+        return {"ok": True, "id": gid, "side": side, "title": room.record["title"], "link": f"/g/{gid}?t={tok}"}
 
 
 def make_handler(app: App):
@@ -161,7 +203,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/healthz":
                 return self._json({"ok": True, "storage": self.app.storage_status()})
             if path == "/api/config":
-                return self._json({"access_code_required": bool(self.app.access_code)})
+                return self._json({"join_codes": True})
             if path == "/api/games":
                 return self._json({"games": self.app.store.summaries()})
             if path == "/api/lists":
@@ -171,7 +213,18 @@ class _Handler(BaseHTTPRequestHandler):
             m = _GAME_RE.match(path)
             if m:
                 gid, what = m.groups()
-                room = self._room(gid)
+                try:
+                    room = self._room(gid)
+                except RoomWaiting as wait:  # pas encore de plateau : l'adversaire n'a pas rejoint
+                    if what == "layout":
+                        return self._json(self.app.layout_json(wait.record["config"].get("layout", "layout_a")))
+                    if what == "state":
+                        return self._json(waiting_snapshot(wait.record, token))
+                    if what == "history":
+                        return self._json({"history": [], "timeline": 0})
+                    if what == "record":
+                        return self._json(public_record(wait.record), download=f"40k_{gid}.json")
+                    raise
                 if what == "layout":
                     return self._json(room.layout_json)
                 if what == "state":
@@ -212,11 +265,15 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/games":
                 return self._json(self.app.create_game(payload))
+            if path == "/api/join":
+                return self._json(self.app.join_game(payload))
             if path in ("/api/lists/preview", "/api/lists/save"):
                 return self._json(self._lists(path, payload))
             m = _GAME_RE.match(path)
             if m:
                 gid, what = m.groups()
+                if what == "join":
+                    return self._json(self.app.join_game(payload, gid=gid, token=token))
                 room = self._room(gid)
                 if what == "action":
                     return self._json(room.act(token, payload))
@@ -238,7 +295,6 @@ class _Handler(BaseHTTPRequestHandler):
         text = payload.get("text", "")
         try:
             if path.endswith("save"):
-                self.app.check_code(payload.get("access_code"))
                 name, al = save_list(text, self.app.cat, name=payload.get("name") or None, overwrite=bool(payload.get("overwrite")))
             else:
                 al = resolve_text(text, self.app.cat)
@@ -251,22 +307,22 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8040, cat: Optional[Catalog] = None, open_browser: bool = True, data_dir=None,
-          access_code: Optional[str] = None, quick: Optional[Dict[str, Any]] = None):
+          quick: Optional[Dict[str, Any]] = None):
     """Lance le service. ``quick`` : crée tout de suite une partie (``{"side", "attacker_list",
     "defender_list"}``) contre le bot et ouvre son lien."""
     cat = cat or load_catalog()
-    app = App(cat, data_dir=data_dir, access_code=access_code)
+    app = App(cat, data_dir=data_dir)
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
     shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
     url = f"http://{shown}:{port}/"
     if quick:
         side = quick.get("side") or "attacker"
         other = "defender" if side == "attacker" else "attacker"
-        res = app.create_game({"access_code": app.access_code, "lists": {"attacker": quick.get("attacker_list"), "defender": quick.get("defender_list")},
+        res = app.create_game({"lists": {"attacker": quick.get("attacker_list"), "defender": quick.get("defender_list")},
                                "players": {side: {"kind": "human", "name": "Moi"}, other: {"kind": "bot"}}})
         url = f"http://{shown}:{port}{res['links'][side]}"
     print(f"40kPlayer — parties dans {app.store.directory}")
-    print(f"Service ouvert sur {url}  (Ctrl-C pour arrêter)" + ("  — code d'accès requis pour créer une partie" if app.access_code else ""))
+    print(f"Service ouvert sur {url}  (Ctrl-C pour arrêter)")
     if open_browser:
         try:
             import webbrowser

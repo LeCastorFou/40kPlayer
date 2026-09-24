@@ -8,12 +8,11 @@ Idempotent : relancer le script ne duplique rien. Étapes :
    applications de l'instance si elles en ont un ;
 3. source : ce dépôt GitHub (``--repo``, branche ``--branch``) via un fournisseur GitHub de Dokploy
    qui y a accès ;
-4. build ``Dockerfile``, variable ``FORTYK_ACCESS_CODE``, volume nommé monté sur ``/data`` ;
+4. build ``Dockerfile`` (sans variable d'environnement), volume nommé monté sur ``/data`` ;
 5. domaine : ``--domain`` (HTTPS Let's Encrypt), sinon un domaine traefik.me généré par Dokploy ;
 6. déploiement, attente de la fin, puis ``/healthz``.
 
-Variables d'environnement : ``DOKPLOY_URL``, ``DOKPLOY_API_KEY`` (obligatoires),
-``FORTYK_ACCESS_CODE`` (facultative). Rien de secret n'est affiché.
+Variables d'environnement : ``DOKPLOY_URL``, ``DOKPLOY_API_KEY``. Rien de secret n'est affiché.
 
     DOKPLOY_URL=… DOKPLOY_API_KEY=… python3 scripts/dokploy_setup.py --repo LeCastorFou/40kPlayer
 """
@@ -199,7 +198,7 @@ def github_source(api: Dokploy, app_id: str, owner: str, repo: str, branch: str)
          f"(Settings → Git → GitHub) en lui donnant accès au dépôt, puis relance")
 
 
-def build_and_env(api: Dokploy, app_id: str, access_code: Optional[str]) -> None:
+def build_and_env(api: Dokploy, app_id: str) -> None:
     payload = {"applicationId": app_id, "buildType": "dockerfile", "dockerfile": "Dockerfile", "dockerContextPath": ".",
                "dockerBuildStage": "", "publishDirectory": None, "herokuVersion": None, "isStaticSpa": None, "railpackVersion": None}
     code, body = api.call("application.saveBuildType", payload)
@@ -208,7 +207,7 @@ def build_and_env(api: Dokploy, app_id: str, access_code: Optional[str]) -> None
         code, body = api.call("application.saveBuildType", minimal)
     if code != 200:
         fail(f"application.saveBuildType -> {code} {short(body)}")
-    env = f"FORTYK_ACCESS_CODE={access_code}" if access_code else ""
+    env = ""  # plus de code d'accès au serveur : chaque partie a son code, donné par son créateur
     tries = [
         {"applicationId": app_id, "env": env, "buildArgs": "", "buildSecrets": "", "createEnvFile": False},
         {"applicationId": app_id, "env": env, "buildArgs": "", "buildSecrets": ""},
@@ -220,13 +219,10 @@ def build_and_env(api: Dokploy, app_id: str, access_code: Optional[str]) -> None
         code, body = api.call("application.saveEnvironment", payload)
         if code == 200:
             break
-        text = short(body, 600)
-        if access_code:
-            text = text.replace(access_code, "***")
-        errors.append(text)
+        errors.append(short(body, 600))
     else:
         fail(f"application.saveEnvironment -> {code} ; réponses : {' | '.join(errors)}")
-    print("build : Dockerfile ; variable FORTYK_ACCESS_CODE " + ("définie" if access_code else "vide (création de parties ouverte à tous)"))
+    print("build : Dockerfile ; aucune variable d'environnement")
 
 
 def app_details(api: Dokploy, app_id: str) -> Dict[str, Any]:
@@ -306,27 +302,11 @@ def deploy_and_wait(api: Dokploy, app_id: str, url: str, minutes: int = 20) -> N
                 notice(f"santé : {url}/healthz -> {r.status} {r.read()[:120].decode(errors='replace')}")
                 with urllib.request.urlopen(url + "/api/config", timeout=10) as r2:
                     notice(f"config : {r2.read()[:120].decode(errors='replace')}")
-                check_access_code(url)
                 return
         except Exception as err:  # noqa: BLE001
             last = err
             time.sleep(10)
     print(f"::warning::{url}/healthz ne répond pas encore ({last}) — le certificat ou le DNS peut prendre quelques minutes")
-
-
-def check_access_code(url: str) -> None:
-    """Le code d'accès du service est-il bien celui du secret ? Sonde sans effet de bord : on demande
-    d'enregistrer une liste vide ; un bon code donne « liste vide », un mauvais « code d'accès incorrect »."""
-    code = os.environ.get("FORTYK_ACCESS_CODE")
-    if not code:
-        return
-    req = urllib.request.Request(url + "/api/lists/save", method="POST", data=json.dumps({"text": "", "access_code": code}).encode(),
-                                 headers={"content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        err = json.loads(r.read()).get("error", "")
-    if "code d'accès" in err:
-        fail("le service refuse le code d'accès du secret FORTYK_ACCESS_CODE : la variable de l'application Dokploy ne correspond pas")
-    notice(f"code d'accès : accepté par le service ({len(code)} caractères)")
 
 
 def main(argv=None) -> int:
@@ -350,7 +330,7 @@ def main(argv=None) -> int:
     app_id = ensure_application(api, project, args.app, server_id)
     owner, repo = args.repo.split("/", 1)
     github_source(api, app_id, owner, repo, args.branch)
-    build_and_env(api, app_id, os.environ.get("FORTYK_ACCESS_CODE") or None)
+    build_and_env(api, app_id)
     app = app_details(api, app_id)
     ensure_volume(api, app)
     app = app_details(api, app_id)

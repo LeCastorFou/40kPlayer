@@ -177,10 +177,10 @@ class HttpTests(unittest.TestCase):
     def setUpClass(cls):
         cls.cat = load_catalog()
 
-    def serve(self, access_code=None):
+    def serve(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        app = App(self.cat, data_dir=tmp.name, access_code=access_code)
+        app = App(self.cat, data_dir=tmp.name)
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.server_close)
@@ -221,12 +221,50 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             request(base, "/api/g/inconnue/state")
 
-    def test_access_code(self):
-        base, _ = self.serve(access_code="lion")
-        self.assertTrue(request(base, "/api/config")["access_code_required"])
-        body = {"lists": {"attacker": None, "defender": None}, "players": HUMANS}
-        self.assertFalse(request(base, "/api/games", body)["ok"])
-        self.assertTrue(request(base, "/api/games", dict(body, access_code="lion"))["ok"])
+    def test_join_with_game_code_and_own_list(self):
+        """Le créateur choisit sa liste et son camp ; l'adversaire rejoint avec le code de partie et sa liste."""
+        base, app = self.serve()
+        res = request(base, "/api/games", {"side": "defender", "name": "Valentin", "list": None, "opponent": {"kind": "human"}})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((res["status"], res["join"]["side"]), ("waiting", "attacker"))
+        code, gid = res["join"]["code"], res["id"]
+        self.assertRegex(code, r"^[A-Z2-9]{3}-[A-Z2-9]{3}$")
+        mine = res["links"]["defender"].split("t=")[1]
+        # en attente : le créateur voit le code, un spectateur non, la partie est listée sans le code
+        st = request(base, f"/api/g/{gid}/state?t={mine}")
+        self.assertTrue(st["waiting"])
+        self.assertEqual(st["join"]["code"], code)
+        self.assertIsNone(request(base, f"/api/g/{gid}/state")["join"])
+        self.assertEqual(request(base, f"/api/g/{gid}/layout")["board"], [44.0, 60.0])
+        games = request(base, "/api/games")["games"]
+        self.assertEqual((games[0]["status"], games[0]["open_side"]), ("waiting", "attacker"))
+        self.assertNotIn(code.replace("-", ""), json.dumps(games))
+        self.assertNotIn("join", request(base, f"/api/g/{gid}/record"))
+        self.assertFalse(request(base, f"/api/g/{gid}/action?t={mine}", {"type": "option", "index": 0})["ok"])
+        # mauvais code, puis bon code tapé sans tiret et en minuscules
+        self.assertFalse(request(base, "/api/join", {"code": "AAA-AAA", "name": "Paul"})["ok"])
+        joined = request(base, "/api/join", {"code": code.replace("-", "").lower(), "name": "Paul", "list": "ec_mercurial_host_2000"})
+        self.assertTrue(joined["ok"], joined)
+        self.assertEqual(joined["side"], "attacker")
+        theirs = joined["link"].split("t=")[1]
+        st = request(base, f"/api/g/{gid}/state?since=0&t={theirs}")
+        self.assertNotIn("waiting", st)
+        self.assertEqual((st["you"], st["players"]["attacker"]["name"], st["players"]["defender"]["name"]), ("attacker", "Paul", "Valentin"))
+        self.assertIn("CR1", {u["id"] for u in st["units"]})  # la liste choisie par l'adversaire
+        self.assertEqual(st["game"]["title"], "Emperor’s Children vs Emperor’s Children")
+        self.assertEqual(request(base, f"/api/g/{gid}/state?t={mine}")["you"], "defender")
+        self.assertFalse(request(base, "/api/join", {"code": code, "name": "Intrus"})["ok"])  # plus de place
+        # par le lien d'invitation
+        res2 = request(base, "/api/games", {"side": "attacker", "name": "Valentin", "opponent": {"kind": "human"}})
+        invite = res2["join"]["invite"].split("t=")[1]
+        self.assertTrue(request(base, f"/api/g/{res2['id']}/state?t={invite}")["can_join"])
+        self.assertFalse(request(base, f"/api/g/{res2['id']}/join?t=faux", {"name": "X"})["ok"])
+        ok2 = request(base, f"/api/g/{res2['id']}/join?t={invite}", {"name": "Paul"})
+        self.assertTrue(ok2["ok"], ok2)
+        self.assertEqual(ok2["side"], "defender")
+        # contre le bot : la partie démarre tout de suite, pas de code
+        res3 = request(base, "/api/games", {"side": "attacker", "name": "Moi", "opponent": {"kind": "bot", "list": None}})
+        self.assertEqual((res3["status"], res3.get("join")), ("active", None))
 
 
 if __name__ == "__main__":

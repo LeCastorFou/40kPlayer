@@ -101,7 +101,7 @@ class ListLibraryTests(unittest.TestCase):
                 # la liste est gardée en texte dans la partie : elle ne dépend plus du fichier
                 doc = json.loads(Path(games, new["id"] + ".json").read_text(encoding="utf-8"))
                 self.assertIn("Chaos Rhino", doc["config"]["lists"]["attacker"]["text"])
-                wrong = post(base, "/api/games", {"lists": {"attacker": "inconnue"}})
+                wrong = post(base, "/api/games", {"list": "inconnue", "opponent": {"kind": "human"}})
                 self.assertFalse(wrong["ok"])
             finally:
                 httpd.shutdown()

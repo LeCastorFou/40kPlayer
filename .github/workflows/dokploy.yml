@@ -1,9 +1,9 @@
 name: Dokploy (test) — créer / déployer 40kPlayer
 
 # Lancé à la main (onglet Actions → « Run workflow »). Crée si besoin le projet et l'application
-# sur l'instance Dokploy de test, les configure (Dockerfile, volume /data, domaine, code d'accès)
+# sur l'instance Dokploy de test, les configure (Dockerfile, volume /data, domaine)
 # et déploie. Idempotent. Ensuite, Dokploy redéploie tout seul à chaque push sur main.
-# Secrets du dépôt : DOKPLOY_URL, DOKPLOY_API_KEY, FORTYK_ACCESS_CODE.
+# Secrets du dépôt : DOKPLOY_URL, DOKPLOY_API_KEY.
 
 on:
   workflow_dispatch:
@@ -45,7 +45,6 @@ jobs:
         env:
           DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
           DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
-          FORTYK_ACCESS_CODE: ${{ secrets.FORTYK_ACCESS_CODE }}
           IN_PROJECT: ${{ inputs.project }}
           IN_APP: ${{ inputs.app }}
           IN_DOMAIN: ${{ inputs.domain }}
