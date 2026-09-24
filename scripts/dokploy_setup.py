@@ -306,11 +306,27 @@ def deploy_and_wait(api: Dokploy, app_id: str, url: str, minutes: int = 20) -> N
                 notice(f"santé : {url}/healthz -> {r.status} {r.read()[:120].decode(errors='replace')}")
                 with urllib.request.urlopen(url + "/api/config", timeout=10) as r2:
                     notice(f"config : {r2.read()[:120].decode(errors='replace')}")
+                check_access_code(url)
                 return
         except Exception as err:  # noqa: BLE001
             last = err
             time.sleep(10)
     print(f"::warning::{url}/healthz ne répond pas encore ({last}) — le certificat ou le DNS peut prendre quelques minutes")
+
+
+def check_access_code(url: str) -> None:
+    """Le code d'accès du service est-il bien celui du secret ? Sonde sans effet de bord : on demande
+    d'enregistrer une liste vide ; un bon code donne « liste vide », un mauvais « code d'accès incorrect »."""
+    code = os.environ.get("FORTYK_ACCESS_CODE")
+    if not code:
+        return
+    req = urllib.request.Request(url + "/api/lists/save", method="POST", data=json.dumps({"text": "", "access_code": code}).encode(),
+                                 headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        err = json.loads(r.read()).get("error", "")
+    if "code d'accès" in err:
+        fail("le service refuse le code d'accès du secret FORTYK_ACCESS_CODE : la variable de l'application Dokploy ne correspond pas")
+    notice(f"code d'accès : accepté par le service ({len(code)} caractères)")
 
 
 def main(argv=None) -> int:
