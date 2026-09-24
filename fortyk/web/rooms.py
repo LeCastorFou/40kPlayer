@@ -50,14 +50,16 @@ from ..engine.actions import (
     MoveAction,
     OathAction,
     SelectUnitAction,
+    ManualAction,
     ShootAction,
     StratagemAction,
+    UseStratagemAction,
 )
 from ..engine.movement import FormationMove, MoveKind
 from ..engine.record import action_from_json, action_to_json
 from ..engine.state import SIDES, GameState, other_side
 from ..training import build_initial_state, iter_replay
-from .serialize import action_label, decision_to_json, factions_of, layout_to_json, state_to_json
+from .serialize import action_label, decision_to_json, factions_of, layout_to_json, rules_menu, state_to_json, stratagem_book_json
 
 __all__ = ["FORMAT", "GameStore", "Room", "Rooms", "RoomError", "RoomWaiting", "RoomDeleted", "decode_action", "build_initial_state", "public_record",
            "waiting_snapshot", "normalize_code", "format_code", "new_record"]
@@ -156,6 +158,30 @@ def decode_action(decision: Decision, payload: Dict[str, Any]):
     raise ValueError(f"type d'action inconnu : {kind}")
 
 
+def decode_free(payload: Dict[str, Any]):
+    """Action libre envoyée par le navigateur : {"type": "use_stratagem", stratagem_id, unit_id, target_id,
+    model_id, choice, note} ou {"type": "manual", kind, unit_id, model_ids, value, positions, effect,
+    effect_value, until, scope, vs, rule, note}."""
+    t = payload.get("type")
+
+    def opt_str(k, n=120):
+        v = payload.get(k)
+        return None if v in (None, "") else str(v)[:n]
+
+    if t == "use_stratagem":
+        return UseStratagemAction(str(payload["stratagem_id"]), opt_str("unit_id"), opt_str("target_id"), opt_str("model_id"), opt_str("choice"),
+                                  (payload.get("note") or "")[:300])
+    if t == "manual":
+        value = payload.get("value")
+        return ManualAction(
+            kind=str(payload.get("kind", "note")), unit_id=opt_str("unit_id"), model_ids=tuple(str(m) for m in (payload.get("model_ids") or ())),
+            value=None if value in (None, "") else int(value), positions=_decode_positions(payload.get("positions") or {}),
+            effect=opt_str("effect"), effect_value=opt_str("effect_value"), until=str(payload.get("until") or "phase"),
+            scope=str(payload.get("scope") or "all"), vs=opt_str("vs"), rule=(payload.get("rule") or "")[:120], note=(payload.get("note") or "")[:300],
+        )
+    raise ValueError(f"action libre inconnue : {t}")
+
+
 # ------------------------------------------------------------------ document
 
 
@@ -197,7 +223,7 @@ def new_record(store: Optional["GameStore"], lists: Dict[str, Optional[Dict[str,
         "title_auto": title is None,
         "created": _now(),
         "updated": _now(),
-        "config": {"layout": layout, "seed": seed, "deploy": True, "dice_after_undo": "new", "rev": 2, "stratagems": True,
+        "config": {"layout": layout, "seed": seed, "deploy": True, "dice_after_undo": "new", "rev": 3, "stratagems": True,
                    "lists": {side: (dict(lists[side]) if lists.get(side) else None) for side in SIDES}},
         "players": pl,
         "history": [],
@@ -605,9 +631,47 @@ class Room:
             self._changed()
             return {"ok": True}
 
+    def free(self, token: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Action libre (effet manuel, stratagème du panneau) : l'un ou l'autre joueur, à tout moment."""
+        with self.lock:
+            side = self._require_player(token)
+            try:
+                action = decode_free(payload)
+            except (KeyError, ValueError, TypeError) as err:
+                raise RoomError(str(err)) from err
+            err = self.engine.free_error(self.state, side, action)
+            if err is not None:
+                raise RoomError(err)
+            s = self.state
+            entry = {"i": len(self.record["history"]), "side": side, "by": "human", "decision": "free", "round": s.battle_round, "phase": s.phase,
+                     "unit_id": getattr(action, "unit_id", None), "label": action_label(s, None, action), "action": action_to_json(action), "t": _now()}
+            before = s.clone()
+            try:
+                self.engine.apply_free(s, side, action, validate=False)
+                self.engine.decision(s)  # la décision en cours doit rester possible
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self.state = before
+                raise RoomError(f"action impossible ici : {type(exc).__name__}: {exc}") from exc
+            self.snaps.append(before)
+            self.record["history"].append(entry)
+            self.observe = None if self.observe and self.observe["side"] == side else self.observe
+            self._drive()
+            self._changed()
+            return {"ok": True}
+
     def check(self, token: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
         """Vérification à blanc d'un placement (pendant le glissement) : rien n'est joué ni enregistré.
         Retourne {ok, error, model_id} (la figurine fautive quand le message la nomme)."""
+        if payload.get("type") in ("manual", "use_stratagem"):
+            with self.lock:
+                side = self._require_player(token)
+                try:
+                    err = self.engine.free_error(self.state, side, decode_free(payload))
+                except (KeyError, ValueError, TypeError) as exc:
+                    err = str(exc)
+            m = re.match(r"^([A-Za-z0-9]+\.\d+)\b", err or "")
+            return {"ok": err is None, "error": err, "model_id": m.group(1) if m else None}
         with self.lock:
             side = self._require_player(token)
             d = self.engine.decision(self.state)
@@ -637,7 +701,7 @@ class Room:
             start = max(0, min(int(start), n), n - limit)
 
             def pose(st: GameState) -> Dict[str, list]:
-                return {m.id: [round(m.x, 3), round(m.y, 3), round(m.angle, 4), 1 if m.alive else 0, m.wounds, 1 if u.embarked_in is None else 0]
+                return {m.id: [round(m.x, 3), round(m.y, 3), round(m.angle, 4), 1 if m.alive else 0, m.wounds, 1 if (u.embarked_in is None and not u.in_reserve) else 0]
                         for u in st.units.values() for m in u.models}
 
             first = self.snaps[start] if start < n else self.state
@@ -829,6 +893,14 @@ class Room:
             "can_undo": viewer is not None and any(h.get("by", "human") == "human" for h in rec["history"]),
             "last_undo": None if undo is None else {k: undo[k] for k in ("n", "by", "name", "t", "to", "count", "where", "first")},
         }
+        if viewer is not None:
+            from ..engine.effects import KINDS
+            from ..engine.free import MANUAL_KINDS
+
+            extra["stratagem_book"] = stratagem_book_json(s, viewer) if s.stratagems else []
+            extra["rules_menu"] = rules_menu(s, viewer)
+            extra["manual_kinds"] = MANUAL_KINDS
+            extra["effect_kinds"] = KINDS
         snap = state_to_json(s, d, viewer, since=0, extra=extra)
         snap["_log"] = snap.pop("log")
         snap["version"] = self.version

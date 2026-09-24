@@ -47,6 +47,7 @@ from .attack import (
 from .geometry import disk_gap, within
 from .rules import DEFAULT_RULES, save_needed
 from .state import GameState, Model, Unit
+from .effects import best_threshold, effect_total, granted_abilities, has_effect, reroll_policy
 from .stratagems import effect_of
 
 __all__ = [
@@ -129,19 +130,30 @@ def unit_toughness(unit: Unit) -> int:
     return max((m.profile.toughness for m in guards), default=unit.profile.toughness)
 
 
-def defender_of(unit: Unit) -> Defender:
+def defender_of(unit: Unit, state: Optional[GameState] = None) -> Defender:
+    """Caractéristiques défensives de l'unité ; avec ``state``, les effets actifs (Feel No Pain,
+    invulnérable, réduction de dégâts, sauvegarde améliorée) sont pris en compte."""
     p = unit.profile
     fnp = None
     for a in unit.datasheet.core_abilities:
         if a.name == "Feel No Pain" and a.parameter.rstrip("+").isdigit():
             fnp = int(a.parameter.rstrip("+"))
+    save, invuln, reduction = p.save, p.invuln, damage_reduction_of(unit)
+    if state is not None and state.effects:
+        fnp = best_threshold(state, unit.id, "fnp", fnp)
+        invuln = best_threshold(state, unit.id, "invuln", invuln)
+        reduction += effect_total(state, unit.id, "damage_reduction")
+        save = max(2, save - effect_total(state, unit.id, "save_mod"))
+    toughness = unit_toughness(unit)
+    if state is not None and state.effects:
+        toughness += effect_total(state, unit.id, "toughness_mod")
     return Defender(
-        toughness=unit_toughness(unit),
-        save=p.save,
-        invuln=p.invuln,
+        toughness=toughness,
+        save=save,
+        invuln=invuln,
         feel_no_pain=fnp,
         is_vehicle_or_monster=is_vehicle_or_monster(unit),
-        damage_reduction=damage_reduction_of(unit),
+        damage_reduction=reduction,
     )
 
 
@@ -152,10 +164,19 @@ def _thrill_seekers(unit: Unit) -> bool:
     return unit.has_ability("Thrill Seekers")
 
 
+def _fall_back_shoot(state: GameState, unit: Unit) -> bool:
+    return _thrill_seekers(unit) or (bool(state.effects) and has_effect(state, unit.id, "fall_back_and_shoot"))
+
+
+def _assault_all(state: GameState, unit: Unit) -> bool:
+    """Toutes les armes de tir comptent comme [ASSAULT] (« can shoot even if it made an Advance »)."""
+    return bool(state.effects) and (has_effect(state, unit.id, "advance_and_shoot") or "assault" in granted_abilities(state, unit.id, "ranged"))
+
+
 def can_shoot(state: GameState, unit: Unit) -> bool:
     if unit.is_destroyed or unit.has_shot:
         return False
-    if unit.fell_back and not _thrill_seekers(unit):
+    if unit.fell_back and not _fall_back_shoot(state, unit):
         return False
     return True
 
@@ -173,12 +194,12 @@ def _big_guns(state: GameState, unit: Unit) -> bool:
     return state.rules.big_guns_never_tire and is_vehicle_or_monster(unit)
 
 
-def _weapon_usable(unit: Unit, weapon: Weapon, engaged: bool, big_guns: bool = False) -> bool:
+def _weapon_usable(unit: Unit, weapon: Weapon, engaged: bool, big_guns: bool = False, assault_all: bool = False) -> bool:
     if weapon.is_melee:
         return False
     if engaged and not is_close_quarters(weapon) and not big_guns:
         return False
-    if unit.advanced and not weapon.has("assault") and not _thrill_seekers(unit):
+    if unit.advanced and not weapon.has("assault") and not _thrill_seekers(unit) and not assault_all:
         return False
     return True
 
@@ -190,8 +211,11 @@ def _unit_has_cover_from(state: GameState, shooter: Model, target: Unit) -> bool
 
     Les cartes ne donnent pas les murs des ruines : une figurine entièrement dans l'empreinte d'une
     ruine est considérée comme partiellement masquée par ses murs (règle validée avec Valentin).
-    Smokescreen (15.10) : l'unité SMOKE visée a le couvert jusqu'à la fin de la phase."""
+    Smokescreen (15.10) : l'unité SMOKE visée a le couvert jusqu'à la fin de la phase ; un effet
+    « cover » (stratagème, capacité) aussi."""
     if state.strat_used and effect_of(state, "smokescreen", target.id):
+        return True
+    if state.effects and has_effect(state, target.id, "cover", "ranged"):
         return True
     in_area_ok = any(target.has_keyword(k) for k in state.rules.cover_keywords) and not is_vehicle_or_monster(target)
     for m in target.alive_models:
@@ -241,6 +265,8 @@ def is_lone_operative(state: GameState, target: Unit) -> bool:
     """Lone Operative : ciblable au tir seulement à 12" ou moins. Capacité Core, ou conditionnelle
     comme Lord of Excess (Daemon Prince of Slaanesh à 3" d'une unité amie Slaanesh Infantry)."""
     if any(a.name == "Lone Operative" for a in target.datasheet.core_abilities):
+        return True
+    if state.effects and has_effect(state, target.id, "lone_operative"):
         return True
     if target.has_ability("Lord of Excess"):
         for friend in state.units_of(target.side):
@@ -357,7 +383,7 @@ def shooting_ineligibility(state: GameState, unit: Unit) -> Optional[str]:
         return "détruite"
     if unit.has_shot:
         return "a déjà tiré"
-    if unit.fell_back and not _thrill_seekers(unit):
+    if unit.fell_back and not _fall_back_shoot(state, unit):
         return "s'est repliée ce tour"
     if not any(m.ranged_weapons for m in unit.alive_models):
         return "aucune arme de tir"
@@ -372,14 +398,15 @@ def shooting_ineligibility(state: GameState, unit: Unit) -> Optional[str]:
     return None
 
 
-def _prefetch_los(state: GameState, unit: Unit, target: Unit, engaged: bool, big_guns: bool, cap: Optional[float], all_targets: bool = False) -> None:
+def _prefetch_los(state: GameState, unit: Unit, target: Unit, engaged: bool, big_guns: bool, cap: Optional[float], all_targets: bool = False,
+                  assault_all: bool = False) -> None:
     """Pré-calcule en un lot les lignes de vue utiles : tireurs ayant une arme utilisable qui porte
     jusqu'à au moins une figurine de la cible, contre les figurines à portée (ou toutes, pour le
     couvert : ``all_targets``)."""
     tdisks = target.disks()
     shooters, targets = [], {}
     for m in unit.alive_models:
-        reach = max((w.range_in or 0.0 for w in m.ranged_weapons if _weapon_usable(unit, w, engaged, big_guns)), default=0.0)
+        reach = max((w.range_in or 0.0 for w in m.ranged_weapons if _weapon_usable(unit, w, engaged, big_guns, assault_all)), default=0.0)
         if cap is not None:
             reach = min(reach, cap)
         md = m.disk
@@ -398,6 +425,7 @@ def shooting_targets(state: GameState, unit: Unit) -> List[Unit]:
         return []
     engaged = state.is_engaged(unit)
     big_guns = _big_guns(state, unit)
+    assault_all = _assault_all(state, unit)
     out = []
     for enemy in state.enemies_of(unit.side):
         if engaged and not unit.in_engagement_range_of(enemy, state.rules):
@@ -407,13 +435,13 @@ def shooting_targets(state: GameState, unit: Unit) -> List[Unit]:
         if _thrill_seekers_forbids(state, unit, enemy):
             continue
         cap = targeting_range_cap(state, enemy)
-        _prefetch_los(state, unit, enemy, engaged, big_guns, cap)
+        _prefetch_los(state, unit, enemy, engaged, big_guns, cap, assault_all=assault_all)
         ok = False
         hidden = hidden_model_ids(state, enemy)
         indirect_ok = _can_shoot_indirect(state, unit)
         for m in unit.alive_models:
             for w in m.ranged_weapons:
-                if not _weapon_usable(unit, w, engaged, big_guns):
+                if not _weapon_usable(unit, w, engaged, big_guns, assault_all):
                     continue
                 if _visible_targets_in_range(state, m, w, enemy, hidden=hidden, cap=cap) or (
                         indirect_ok and w.has("indirect fire") and _visible_targets_in_range(state, m, w, enemy, cap=cap, indirect=True)):
@@ -437,7 +465,7 @@ def snap_targets(state: GameState, unit: Unit, max_range: float = 24.0) -> List[
             continue
         cap = targeting_range_cap(state, enemy)
         hidden = hidden_model_ids(state, enemy)
-        if any(_weapon_usable(unit, w, engaged, big_guns) and _visible_targets_in_range(state, m, w, enemy, hidden=hidden, cap=cap)
+        if any(_weapon_usable(unit, w, engaged, big_guns, _assault_all(state, unit)) and _visible_targets_in_range(state, m, w, enemy, hidden=hidden, cap=cap)
                for m in unit.alive_models for w in m.ranged_weapons):
             out.append(enemy)
     return out
@@ -467,7 +495,9 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit, snap: bo
     heavy_bonus = rules.heavy_hit_bonus if heavy_ok else 0
     oath = state.oath_target == target.id and unit.has_ability("Oath of Moment")
     hail = unit.has_ability("Hail of Bolts")
-    dfd = defender_of(target)
+    dfd = defender_of(target, state)
+    assault_all = _assault_all(state, unit)
+    granted = granted_abilities(state, unit.id, "ranged", target.id) if state.effects else []
     cap = targeting_range_cap(state, target)
     big_guns = _big_guns(state, unit)
     # Big Guns Never Tire : -1 à la touche (hors Pistol) si le tireur M/V est engagé, ou si la cible
@@ -478,7 +508,7 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit, snap: bo
 
     groups: Dict[Tuple, int] = defaultdict(int)
     hazardous_count = 0
-    _prefetch_los(state, unit, target, engaged, big_guns, cap, all_targets=True)
+    _prefetch_los(state, unit, target, engaged, big_guns, cap, all_targets=True, assault_all=assault_all)
     hidden = hidden_model_ids(state, target)
     # tir indirect (10.07) : dès qu'une arme [INDIRECT FIRE] tire sans voir la cible, l'unité tire en
     # « indirect shooting » et toutes ses attaques [INDIRECT FIRE] en subissent les règles
@@ -487,7 +517,7 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit, snap: bo
     blind: Dict[str, List[Weapon]] = {}
     for m in unit.alive_models:
         for w in m.ranged_weapons:
-            if not _weapon_usable(unit, w, engaged, big_guns):
+            if not _weapon_usable(unit, w, engaged, big_guns, assault_all):
                 continue
             if _visible_targets_in_range(state, m, w, target, hidden=hidden, cap=cap):
                 seen.setdefault(m.id, []).append(w)
@@ -524,10 +554,10 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit, snap: bo
             if w.has("blast") and blast_forbidden:
                 continue
             hit_mod = 0
-            if w.has("heavy"):
+            if w.has("heavy") or "heavy" in granted:
                 hit_mod += heavy_bonus
             indirect_w = indirect_mode and w.has("indirect fire")
-            skill_worse = rules.cover_skill_penalty if ((cover or indirect_w) and not w.has("ignores cover")) else 0
+            skill_worse = rules.cover_skill_penalty if ((cover or indirect_w) and not (w.has("ignores cover") or "ignores cover" in granted)) else 0
             if big_guns_penalty and not is_close_quarters(w):
                 hit_mod -= big_guns_penalty
             extra_attacks = 0
@@ -544,41 +574,89 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit, snap: bo
             groups[key] += copies
 
     weapons_by_name = {w.name: w for m in unit.alive_models for w in m.weapons}
+    mods = _attack_mods(state, unit, target, "ranged")
     profiles = []
     for (name, hit_mod, extra_attacks, skill_worse, min_hit), count in groups.items():
         w = weapons_by_name[name]
         if snap:
             min_hit = state.rules.critical_roll  # 15.09 : seul un 6 non modifié touche
-        attacks = DiceExpr(w.attacks.n_dice, w.attacks.sides, w.attacks.flat + extra_attacks) if extra_attacks else w.attacks
-        sustained = w.keyword("sustained hits")
-        sustained_value = None
-        if sustained is not None:
-            v = sustained.value if sustained.value is not None else 1
-            sustained_value = v if isinstance(v, DiceExpr) else DiceExpr.fixed(int(v))
-        anti = w.keyword("anti")
-        crit_on = anti.value if (anti is not None and anti.target and target.has_keyword(anti.target) and isinstance(anti.value, int)) else 6
-        profiles.append(
-            AttackProfile(
-                attacks=attacks,
-                skill=None if w.has("torrent") else min(7, w.skill + skill_worse),
-                strength=w.strength,
-                ap=w.ap,
-                damage=w.damage,
-                count=count,
-                hit_modifier=hit_mod,
-                min_unmodified_hit=min_hit,
-                reroll_hits=REROLL_FAILS if (oath and not min_hit) else REROLL_NONE,  # pas de relance en tir indirect ni d'opportunité
-                reroll_wounds=REROLL_FAILS if w.has("twin-linked") else REROLL_NONE,
-                lethal_hits=w.has("lethal hits"),
-                sustained_hits=sustained_value,
-                devastating_wounds=w.has("devastating wounds"),
-                critical_wound_on=crit_on,
-                precision=w.has("precision"),
-                label=f"{w.name} ×{count}" + (f" ({hit_mod:+d} touche)" if hit_mod else "") + (" (couvert : CT -1)" if skill_worse else "")
-                      + ((" (tir d'opportunité : 6 non modifié)" if snap else f" (indirect : {min_hit}+ non modifié)") if min_hit else ""),
-            )
-        )
+        attacks = DiceExpr(w.attacks.n_dice, w.attacks.sides, w.attacks.flat + extra_attacks + mods["attacks"]) if (extra_attacks or mods["attacks"]) else w.attacks
+        base_reroll = REROLL_FAILS if (oath and not min_hit) else REROLL_NONE  # pas de relance en tir indirect ni d'opportunité
+        profiles.append(_profile(state, unit, target, w, mods, granted, count=count, attacks=attacks,
+                                 skill=None if w.has("torrent") else min(7, w.skill + skill_worse), hit_mod=hit_mod, min_hit=min_hit,
+                                 reroll_hits=REROLL_NONE if min_hit else base_reroll, reroll_wounds=REROLL_NONE, scope="ranged", snap=snap,
+                                 label=f"{w.name} ×{count}" + (f" ({hit_mod:+d} touche)" if hit_mod else "") + (" (couvert : CT -1)" if skill_worse else "")
+                                 + ((" (tir d'opportunité : 6 non modifié)" if snap else f" (indirect : {min_hit}+ non modifié)") if min_hit else "")))
     return profiles, hazardous_count
+
+
+def _attack_mods(state: GameState, unit: Unit, target: Unit, scope: str) -> Dict[str, int]:
+    """Modificateurs d'effets (stratagèmes, capacités, effets manuels) pour les attaques de ``unit``
+    contre ``target`` : ceux de l'attaquant et ceux « contre » la cible."""
+    z = {"hit": 0, "wound": 0, "ap": 0, "damage": 0, "strength": 0, "attacks": 0}
+    if not state.effects:
+        return z
+    u, t = unit.id, target.id
+    z["hit"] = effect_total(state, u, "hit_mod", scope, t) + effect_total(state, t, "hit_mod_against", scope, u)
+    z["wound"] = effect_total(state, u, "wound_mod", scope, t) + effect_total(state, t, "wound_mod_against", scope, u)
+    z["ap"] = effect_total(state, u, "ap_mod", scope, t) - effect_total(state, t, "ap_worsen", scope, u)
+    z["damage"] = effect_total(state, u, "damage_mod", scope, t)
+    z["strength"] = effect_total(state, u, "strength_mod", scope, t)
+    z["attacks"] = effect_total(state, u, "attacks_mod", scope, t)
+    return z
+
+
+def _granted_value(granted: List[str], key: str):
+    """Valeur d'un mot-clé gagné (« sustained hits 2 » → 2, « anti-infantry 4+ » → ('infantry', 4))."""
+    for g in granted:
+        if g.startswith(key):
+            rest = g[len(key):].strip(" -")
+            return rest or True
+    return None
+
+
+def _profile(state: GameState, unit: Unit, target: Unit, w: Weapon, mods: Dict[str, int], granted: List[str], *, count: int, attacks, skill,
+             hit_mod: int, min_hit: int, reroll_hits: str, reroll_wounds: str, scope: str, label: str, snap: bool = False,
+             wound_mod: int = 0, ap_bonus: int = 0, precision: bool = False) -> AttackProfile:
+    """Profil d'attaque d'une arme avec les mots-clés de la fiche, les effets actifs et le contexte."""
+    has = (lambda k: w.has(k) or any(g == k or g.startswith(k + " ") for g in granted))
+    sustained = w.keyword("sustained hits")
+    sustained_value = None
+    if sustained is not None:
+        v = sustained.value if sustained.value is not None else 1
+        sustained_value = v if isinstance(v, DiceExpr) else DiceExpr.fixed(int(v))
+    extra_sus = _granted_value(granted, "sustained hits")
+    if extra_sus is not None and sustained_value is None:
+        sustained_value = DiceExpr.fixed(int(extra_sus)) if str(extra_sus).isdigit() else DiceExpr.fixed(1)
+    anti = w.keyword("anti")
+    crit_on = anti.value if (anti is not None and anti.target and target.has_keyword(anti.target) and isinstance(anti.value, int)) else 6
+    for g in granted:  # « anti-infantry 4+ » gagné
+        m = re.match(r"anti-(.+?)\s+(\d)\+?$", g)
+        if m and target.has_keyword(m.group(1)):
+            crit_on = min(crit_on, int(m.group(2)))
+    rr_hits, rr_wounds = reroll_hits, (REROLL_FAILS if has("twin-linked") else reroll_wounds)
+    crit_hit = 6
+    if state.effects:
+        if not snap and not min_hit:
+            rr_hits = reroll_policy(rr_hits, state, unit.id, "reroll_hits", scope, target.id)
+        rr_wounds = reroll_policy(rr_wounds, state, unit.id, "reroll_wounds", scope, target.id)
+        crit_hit = best_threshold(state, unit.id, "crit_hit_on", 6, scope, target.id) if not snap else 6
+    damage = w.damage
+    if mods["damage"]:
+        damage = DiceExpr(w.damage.n_dice, w.damage.sides, w.damage.flat + mods["damage"])
+    ap = w.ap - ap_bonus - mods["ap"]
+    if state.effects:  # « if the Strength of that attack is greater than your unit's Toughness » : arme par arme
+        wound_mod += effect_total(state, target.id, "wound_mod_against", scope, unit.id, strength=w.strength + mods["strength"]) \
+            - effect_total(state, target.id, "wound_mod_against", scope, unit.id)
+    if skill is not None and state.effects:
+        skill = max(2, skill - effect_total(state, unit.id, "skill_mod", scope, target.id))
+    return AttackProfile(
+        attacks=attacks, skill=skill, strength=w.strength + mods["strength"], ap=min(0, ap), damage=damage, count=count,
+        hit_modifier=hit_mod + mods["hit"], wound_modifier=wound_mod + mods["wound"], min_unmodified_hit=min_hit,
+        reroll_hits=rr_hits, reroll_wounds=rr_wounds, lethal_hits=has("lethal hits"), sustained_hits=sustained_value,
+        devastating_wounds=has("devastating wounds"), critical_wound_on=crit_on, precision=precision or has("precision"),
+        critical_hit_on=crit_hit, label=label,
+    )
 
 
 def is_character_model(unit: Unit, model: Model) -> bool:
@@ -592,8 +670,9 @@ def _is_wounded(model: Model) -> bool:
     return model.wounds < model.profile.wounds
 
 
-def _save_target(model: Model, ap: int, rules) -> Optional[int]:
-    return save_needed(model.profile.save, ap, model.profile.invuln, rules)
+def _save_target(model: Model, ap: int, rules, save_bonus: int = 0, invuln: Optional[int] = None) -> Optional[int]:
+    inv = model.profile.invuln if invuln is None else (invuln if model.profile.invuln is None else min(invuln, model.profile.invuln))
+    return save_needed(max(2, model.profile.save - save_bonus), ap, inv, rules)
 
 
 def allocation_groups(unit: Unit, ap: int = 0, rules=None) -> List[List[Model]]:
@@ -653,6 +732,21 @@ def _precision_group(state: GameState, target: Unit, groups: List[List[Model]], 
     return None
 
 
+def apply_mortal_wounds(state: GameState, unit: Unit, amount: int) -> Tuple[int, int]:
+    """Blessures mortelles (06.02) : Feel No Pain blessure par blessure (celui de la fiche, ou un effet,
+    y compris « contre les blessures mortelles »), puis allocation qui déborde de figurine en figurine.
+    Retourne (figurines perdues, blessures évitées)."""
+    if amount <= 0:
+        return 0, 0
+    fnp = defender_of(unit, state).feel_no_pain
+    if state.effects:
+        fnp = best_threshold(state, unit.id, "fnp_mortal", fnp)
+    kept = amount
+    if fnp:
+        kept = sum(1 for _ in range(amount) if state.rng.randint(1, 6) < fnp)
+    return (unit.allocate_mortal_wounds(kept) if kept else 0), amount - kept
+
+
 def _lose_wounds(state: GameState, model: Model, amount: int, fnp: Optional[int]) -> Tuple[int, bool]:
     """Feel No Pain (24.12) blessure par blessure, puis perte des PV. Retourne (PV perdus, détruite)."""
     if fnp:
@@ -672,7 +766,9 @@ def _resolve_profiles(state: GameState, unit: Unit, target: Unit, profiles: List
     plus par blessure critique, après les dégâts normaux)."""
     report = CombatReport(unit.name, target.name, kind, profiles=len(profiles))
     rules = state.rules
-    dfd = defender_of(target)
+    dfd = defender_of(target, state)
+    save_bonus = effect_total(state, target.id, "save_mod") if state.effects else 0
+    inv_bonus = best_threshold(state, target.id, "invuln", None) if state.effects else None
     fnp = dfd.feel_no_pain
     attackers = attackers if attackers is not None else unit.alive_models
     dead_before = sum(1 for m in target.models if not m.alive)
@@ -696,7 +792,7 @@ def _resolve_profiles(state: GameState, unit: Unit, target: Unit, profiles: List
             if group is None:
                 break  # unité détruite : les attaques restantes sont perdues
             model = _select_in_group(group)
-            need = _save_target(model, p.ap, rules)
+            need = _save_target(model, p.ap, rules, save_bonus, inv_bonus)
             if r != 1 and need is not None and r >= need:
                 continue
             unsaved += 1
@@ -731,14 +827,14 @@ def resolve_shooting(state: GameState, unit: Unit, target: Unit, snap: bool = Fa
         mw = hazardous_test(state.rng, hazardous_count, unit.has_keyword("Vehicle") or unit.has_keyword("Monster"), state.rules)
         if mw:
             report.hazardous_mortal_wounds = mw
-            report.own_models_lost = unit.allocate_mortal_wounds(mw)
+            report.own_models_lost = apply_mortal_wounds(state, unit, mw)[0] if state.rev >= 3 else unit.allocate_mortal_wounds(mw)
     return report
 
 
 def expected_shooting(state: GameState, unit: Unit, target: Unit) -> float:
     """Dégâts attendus du tir de ``unit`` sur ``target`` (pour l'évaluation)."""
     profiles, _ = build_shooting_profiles(state, unit, target)
-    dfd = defender_of(target)
+    dfd = defender_of(target, state)
     return sum(expected_attacks(p, dfd, state.rules).damage for p in profiles)
 
 
@@ -768,6 +864,8 @@ def build_melee_profiles(state: GameState, unit: Unit, target: Unit, fighters: O
     ):
         ap_bonus = 1  # Excessive Vigour : PA des armes de mêlée améliorée de 1 après une charge
     epic = effect_of(state, "epic_challenge", unit.id) if state.strat_used else None  # Epic Challenge : figurine choisie
+    granted = granted_abilities(state, unit.id, "melee", target.id) if state.effects else []
+    mods = _attack_mods(state, unit, target, "melee")
     groups: Dict[Tuple[str, bool], int] = defaultdict(int)
     weapons_by_name: Dict[str, Weapon] = {}
     for m in fighters:
@@ -785,33 +883,12 @@ def build_melee_profiles(state: GameState, unit: Unit, target: Unit, fighters: O
     profiles = []
     for (name, precision), count in groups.items():
         w = weapons_by_name[name]
-        sustained = w.keyword("sustained hits")
-        sustained_value = None
-        if sustained is not None:
-            v = sustained.value if sustained.value is not None else 1
-            sustained_value = v if isinstance(v, DiceExpr) else DiceExpr.fixed(int(v))
-        anti = w.keyword("anti")
-        crit_on = anti.value if (anti is not None and anti.target and target.has_keyword(anti.target) and isinstance(anti.value, int)) else 6
-        wound_mod = 1 if (w.has("lance") and unit.charged) else 0
-        profiles.append(
-            AttackProfile(
-                attacks=w.attacks,
-                skill=w.skill,
-                strength=w.strength,
-                ap=w.ap - ap_bonus,
-                damage=w.damage,
-                count=count,
-                wound_modifier=wound_mod,
-                reroll_hits=REROLL_FAILS if oath else REROLL_NONE,
-                reroll_wounds=REROLL_FAILS if w.has("twin-linked") else reroll_wounds,
-                lethal_hits=w.has("lethal hits"),
-                sustained_hits=sustained_value,
-                devastating_wounds=w.has("devastating wounds"),
-                critical_wound_on=crit_on,
-                precision=precision,
-                label=f"{w.name} ×{count}" + (" (Epic Challenge)" if precision and not w.has("precision") else ""),
-            )
-        )
+        lance = w.has("lance") or "lance" in granted
+        attacks = DiceExpr(w.attacks.n_dice, w.attacks.sides, w.attacks.flat + mods["attacks"]) if mods["attacks"] else w.attacks
+        profiles.append(_profile(state, unit, target, w, mods, granted, count=count, attacks=attacks, skill=w.skill, hit_mod=0, min_hit=0,
+                                 reroll_hits=REROLL_FAILS if oath else REROLL_NONE, reroll_wounds=reroll_wounds, scope="melee",
+                                 wound_mod=1 if (lance and unit.charged) else 0, ap_bonus=ap_bonus, precision=precision,
+                                 label=f"{w.name} ×{count}" + (" (Epic Challenge)" if precision and not w.has("precision") else "")))
     return profiles
 
 
@@ -831,7 +908,7 @@ def expected_outcome(state: GameState, unit: Unit, target: Unit, kind: str = "sh
         profiles, _ = build_shooting_profiles(state, unit, target, snap=kind == "snap")
     else:
         profiles = build_melee_profiles(state, unit, target)
-    dfd = defender_of(target)
+    dfd = defender_of(target, state)
     guards = [m for m in target.alive_models if not m.is_leader] or target.alive_models
     w = guards[0].profile.wounds if guards else 1
     dmg = models = 0.0
@@ -844,5 +921,5 @@ def expected_outcome(state: GameState, unit: Unit, target: Unit, kind: str = "sh
 
 def expected_fight(state: GameState, unit: Unit, target: Unit) -> float:
     profiles = build_melee_profiles(state, unit, target)
-    dfd = defender_of(target)
+    dfd = defender_of(target, state)
     return sum(expected_attacks(p, dfd, state.rules).damage for p in profiles)

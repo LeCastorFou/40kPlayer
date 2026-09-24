@@ -10,9 +10,9 @@ Restrictions (15.01) : un joueur n'utilise pas deux fois le même stratagème da
 cible pas la même unité avec deux stratagèmes dans la même phase, et ne cible jamais une unité
 battle-shocked (01.07). Insane Bravery : une fois par bataille.
 
-Pas encore couverts : Rapid Ingress (pas de réserves stratégiques dans le moteur) et Command Re-roll
-sur les jets de touche, blessure, sauvegarde, dégâts, danger et nombre d'attaques (il faudrait
-interrompre la résolution des attaques) ; il relance ici les jets d'Advance et de charge.
+Pas encore couvert : Command Re-roll sur les jets de touche, blessure, sauvegarde, dégâts, danger et
+nombre d'attaques (il faudrait interrompre la résolution des attaques) ; il relance ici les jets
+d'Advance et de charge.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 from .state import GameState, Unit
 
-__all__ = ["Stratagem", "CORE_STRATAGEMS", "WINDOWS", "unavailable", "record_use", "effect_of", "used_this_battle", "cost_of"]
+__all__ = ["Stratagem", "CORE_STRATAGEMS", "CORE_BY_NAME", "WINDOWS", "unavailable", "record_use", "effect_of", "used_this_battle", "cost_of", "key_of"]
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,7 @@ CORE_STRATAGEMS: Dict[str, Stratagem] = {s.key: s for s in (
     Stratagem("insane_bravery", "Insane Bravery", 1, "15.04", "le test de battle-shock est réussi d'office (une fois par bataille)"),
     Stratagem("explosives", "Explosives", 1, "15.05", "une unité ennemie désengagée à 8\" et visible : 6D6, chaque 4+ = 1 blessure mortelle"),
     Stratagem("crushing_impact", "Crushing Impact", 1, "15.06", "D6 = E de la figurine : chaque 1 = 1 BM pour ton unité, chaque 5+ = 1 BM pour l'ennemi (6 au plus chacun)"),
+    Stratagem("rapid_ingress", "Rapid Ingress", 1, "15.07", "une unité en réserve stratégique (hors AIRCRAFT) fait un mouvement d'ingress (pas au round 1)"),
     Stratagem("fire_overwatch", "Fire Overwatch", 1, "15.08", "tir d'opportunité : une unité ennemie visible à 24\", touche seulement sur un 6 non modifié, sans relance"),
     Stratagem("smokescreen", "Smokescreen", 1, "15.10", "jusqu'à la fin de la phase, ton unité SMOKE a le couvert contre les attaques qui la visent"),
     Stratagem("heroic_intervention", "Heroic Intervention", 1, "15.11", "ton unité charge à son tour : Leap to Defend (cibles qui ont chargé) ou Into the Fray (+1 CP : jet plafonné à 6, ennemis à 6\")"),
@@ -54,10 +55,24 @@ WINDOWS: Dict[str, tuple] = {
     "epic_challenge": ("epic_challenge", "ton unité PERSONNAGE vient d'être choisie pour combattre"),
     "crushing_impact": ("crushing_impact", "ton MONSTER / VEHICLE vient de finir sa charge"),
     "fire_overwatch": ("fire_overwatch", "fin de la phase de mouvement adverse"),
+    "rapid_ingress": ("rapid_ingress", "fin de la phase de mouvement adverse"),
     "smokescreen": ("smokescreen", "début de la phase de tir adverse"),
     "heroic_intervention": ("heroic_intervention", "fin de la phase de charge adverse"),
     "counteroffensive": ("counteroffensive", "une unité ennemie vient de combattre (étape Fights First)"),
 }
+
+
+#: nom Wahapedia (normalisé) d'un stratagème de base → clé du moteur
+CORE_BY_NAME = {"COMMAND RE-ROLL": "command_reroll", "EPIC CHALLENGE": "epic_challenge", "INSANE BRAVERY": "insane_bravery",
+                "EXPLOSIVES": "explosives", "CRUSHING IMPACT": "crushing_impact", "RAPID INGRESS": "rapid_ingress",
+                "FIRE OVERWATCH": "fire_overwatch", "SMOKESCREEN": "smokescreen", "HEROIC INTERVENTION": "heroic_intervention",
+                "COUNTEROFFENSIVE": "counteroffensive"}
+
+
+def key_of(name: str) -> str:
+    """Clé des restrictions de 15.01 pour un stratagème (de base : sa clé ; sinon « x:NOM »)."""
+    n = " ".join((name or "").upper().split())
+    return CORE_BY_NAME.get(n, "x:" + n)
 
 
 def cost_of(key: str, mode: Optional[str] = None) -> int:
@@ -74,11 +89,13 @@ def used_this_battle(state: GameState, side: str, key: str) -> bool:
     return any(e[0] == side and e[1] == key for e in state.strat_used)
 
 
-def unavailable(state: GameState, side: str, key: str, unit: Optional[Unit] = None, mode: Optional[str] = None) -> Optional[str]:
-    """Pourquoi ``side`` ne peut pas utiliser ce stratagème (sur ``unit``) maintenant ; None = possible."""
+def unavailable(state: GameState, side: str, key: str, unit: Optional[Unit] = None, mode: Optional[str] = None,
+                cost: Optional[int] = None) -> Optional[str]:
+    """Pourquoi ``side`` ne peut pas utiliser ce stratagème (sur ``unit``) maintenant ; None = possible.
+    ``cost`` : coût d'un stratagème de détachement (les stratagèmes de base ont le leur)."""
     if not state.stratagems:
         return "stratagèmes désactivés pour cette partie"
-    cost = cost_of(key, mode)
+    cost = cost_of(key, mode) if cost is None else cost
     if state.cp.get(side, 0) < cost:
         return f"{cost} CP requis ({state.cp.get(side, 0)} disponible(s))"
     if any(e[0] == side and e[1] == key and _this_phase(state, e) for e in state.strat_used):
@@ -93,9 +110,10 @@ def unavailable(state: GameState, side: str, key: str, unit: Optional[Unit] = No
     return None
 
 
-def record_use(state: GameState, side: str, key: str, unit_id: Optional[str], detail=None, mode: Optional[str] = None) -> int:
+def record_use(state: GameState, side: str, key: str, unit_id: Optional[str], detail=None, mode: Optional[str] = None,
+               cost: Optional[int] = None) -> int:
     """Dépense les CP et note l'utilisation (restrictions, effets jusqu'à la fin de la phase)."""
-    cost = cost_of(key, mode)
+    cost = cost_of(key, mode) if cost is None else cost
     state.cp[side] = state.cp.get(side, 0) - cost
     state.strat_used.append((side, key, unit_id, state.turn_counter, state.phase, detail))
     return cost

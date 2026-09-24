@@ -28,13 +28,16 @@ def new_toy_state(
     for side, specs in rosters.items():
         for u in build_army(cat, specs, side):
             units[u.id] = u
-    return GameState(
+    state = GameState(
         layout=load_layout(layout),
         units=units,
         rules=rules,
         mission=UnstoppableForce(),
         rng=random.Random(seed),
     )
+    core = cat.rules.core_stratagems()
+    state.stratagem_book = {"attacker": list(core), "defender": list(core)}
+    return state
 
 
 def new_state_from_lists(
@@ -73,4 +76,6 @@ def new_state_from_lists(
             units[u.id] = u
     state = GameState(layout=load_layout(layout), units=units, rules=rules, mission=UnstoppableForce(), rng=random.Random(seed))
     state.army_lists = {side: al for side, al in zip(("attacker", "defender"), lists) if al is not None}
+    core = cat.rules.core_stratagems()
+    state.stratagem_book = {side: (list(al.stratagems) if al is not None else list(core)) for side, al in zip(("attacker", "defender"), lists)}
     return state

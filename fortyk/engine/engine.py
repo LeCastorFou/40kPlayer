@@ -56,12 +56,16 @@ from .actions import (
     MoveAction,
     OathAction,
     SelectUnitAction,
+    FREE_ACTIONS,
+    ReserveAction,
     ShootAction,
     StratagemAction,
+    UseStratagemAction,
 )
 import numpy as np
 
 from .combat import (
+    apply_mortal_wounds,
     explosives_targets,
     fight_targets,
     is_character_model,
@@ -72,6 +76,8 @@ from .combat import (
     shooting_targets,
     snap_targets,
 )
+from .effects import effect_total, has_effect, prune_effects
+from .reserves import formation_at, has_deep_strike, has_infiltrators, infiltrate_error, ingress_candidates, ingress_error, reserve_error
 from .stratagems import CORE_STRATAGEMS, WINDOWS, cost_of, record_use, unavailable
 
 from .fastgeo import deployment_grid_legal, shape_arrays
@@ -156,6 +162,7 @@ DECISION_KINDS = {
     "charge_move": "charge_move",
     "fight": "fight",
     "stratagem": "stratagem",
+    "ingress": "ingress",
 }
 
 
@@ -231,6 +238,29 @@ class Engine:
         getattr(self, "_a_" + flow.step)(state, flow, action)
         self._advance(state)
 
+    def free_error(self, state: GameState, side: str, action) -> Optional[str]:
+        """Action libre (effet manuel, stratagème du panneau) de ``side`` : message d'erreur ou None."""
+        from .free import free_error
+
+        return free_error(self, state, side, action)
+
+    def apply_free(self, state: GameState, side: str, action, validate: bool = True) -> str:
+        """Joue une action libre à n'importe quel moment : la décision en cours n'avance pas (elle est
+        recalculée, l'état ayant changé)."""
+        from .free import apply_free
+
+        if validate:
+            err = self.free_error(state, side, action)
+            if err is not None:
+                raise IllegalAction(err)
+        text = apply_free(self, state, side, action)
+        self._say(state, text, "stratagem" if isinstance(action, UseStratagemAction) else "manual", side=side)
+        self._notify(state, side, text)
+        state.history.append((side, action))
+        if state.flow is not None:
+            state.flow.decision = None
+        return text
+
     # ================================================================ événements
 
     def _emit(self, state: GameState, event: dict) -> None:
@@ -299,15 +329,36 @@ class Engine:
 
     def _d_deploy_place(self, s: GameState, flow: Flow) -> Decision:
         unit = s.unit(flow.unit_id)
+        if unit.has_keyword("Aircraft"):  # 23.01 : toujours en réserve stratégique
+            return Decision("deploy", flow.active, [ReserveAction(unit.id)], unit_id=unit.id, note="AIRCRAFT : en réserve stratégique (23.01)")
         options: List[Action] = self.deployment_candidates(s, unit) or self.deployment_candidates(s, unit, step=1.0)
-        # commencer la partie à bord d'un transport ami déjà déployé
+        if has_infiltrators(unit):  # 24.20 : n'importe où à plus de 8" de la zone adverse et de l'ennemi
+            options += [DeployAction(unit.id, x, y) for x, y in ingress_candidates(s, unit, step=2.0, limit=16, mode="infiltrate")]
+        # commencer la partie à bord d'un transport ami déjà déployé (ou en réserve)
         options += [EmbarkAction(unit.id, t.id) for t in embark_options(s, unit, deployed=flow.deployed, check_range=False)]
+        notes = []
+        if reserve_error(s, unit) is None:
+            options.append(ReserveAction(unit.id))
+            notes.append("réserve stratégique possible" + (" (Deep Strike : arrivée n'importe où à plus de 8\" de l'ennemi)" if has_deep_strike(unit) else ""))
+        if has_infiltrators(unit):
+            notes.append("Infiltrators : n'importe où à plus de 8\" de la zone adverse et de toute unité ennemie")
         if not options:
             raise RuntimeError(f"impossible de déployer {unit.name}")
-        return Decision("deploy", flow.active, options, unit_id=unit.id)
+        return Decision("deploy", flow.active, options, unit_id=unit.id, note=" ; ".join(notes))
 
     def _a_deploy_place(self, s: GameState, flow: Flow, action) -> None:
         unit = s.unit(flow.unit_id)
+        if isinstance(action, ReserveAction):
+            unit.in_reserve = True
+            unit.reset_turn_flags()
+            flow.deployed.append(unit.id)
+            flow.queues[flow.active].remove(unit.id)
+            self._say(s, f"Déploiement : {unit.name} est placée en réserve stratégique" + (" (Deep Strike)" if has_deep_strike(unit) else ""),
+                      "reserve", unit=unit.id)
+            self._notify(s, flow.active, f"{unit.name} en réserve stratégique")
+            flow.active = other_side(flow.active)
+            flow.step = "deploy_next"
+            return
         if isinstance(action, EmbarkAction) and action.transport_id is not None:
             t = s.unit(action.transport_id)
             unit.embarked_in = t.id
@@ -430,6 +481,7 @@ class Engine:
         s.turn_counter += 1
         # phase de commandement (08.02) : les deux joueurs gagnent 1 CP
         s.phase = "command"
+        prune_effects(s)
         for sd in SIDES:
             s.cp[sd] = s.cp.get(sd, 0) + 1
         self._say(s, f"Phase de commandement : +1 CP chacun (attaquant {s.cp['attacker']} CP, défenseur {s.cp['defender']} CP)",
@@ -437,7 +489,7 @@ class Engine:
         # V11 (08.03) : test pour chaque unité battle-shocked ou à moitié de son effectif (ou moins) ;
         # l'état persiste tant que l'unité n'a pas réussi un test
         flow.bs_queue = [u.id for u in s.units_of(side) if u.battle_shocked or u.below_half_strength]
-        flow.step = "battle_shock_next"
+        self._boundary(s, flow, "start", "battle_shock_next")
 
     def _auto_battle_shock_next(self, s: GameState, flow: Flow) -> None:
         side = flow.active
@@ -455,6 +507,10 @@ class Engine:
         if any(e[1] == "insane_bravery" and e[2] == u.id and e[3] == s.turn_counter for e in s.strat_used):
             u.battle_shocked = False
             self._say(s, f"Battle-shock : {u.name} — Insane Bravery : test réussi d'office", "battle_shock", unit=u.id, roll=None, passed=True)
+            return
+        if self._has(s, u, "battleshock_pass"):
+            u.battle_shocked = False
+            self._say(s, f"Battle-shock : {u.name} réussit son test d'office (effet)", "battle_shock", unit=u.id, roll=None, passed=True)
             return
         was = u.battle_shocked
         roll = s.roll(2)
@@ -483,22 +539,32 @@ class Engine:
             self._say(s, f"Score (phase de commandement) : +{gained} VP pour {side} — objectifs contrôlés : {', '.join(sorted(controlled)) or 'aucun'}",
                       "score", side=side, vp=gained, when="command", objectives=sorted(controlled))
         self._notify(s, side, f"Phase de commandement de {side} terminée" + (f" : +{gained} VP" if gained else ""))
-        flow.step = "move_start"
+        self._boundary(s, flow, "end", "move_start")
 
     # ---------------------------------------------------------------- mouvement
 
     def _auto_move_start(self, s: GameState, flow: Flow) -> None:
         s.phase = "movement"
+        prune_effects(s)
         # les unités à bord au début de la phase peuvent débarquer (elles sont activées à part)
         flow.pending = [u.id for u in s.units_of(flow.active)] + [u.id for u in s.units_of(flow.active, include_embarked=True) if u.embarked_in is not None]
         flow.ineligible = {}
-        flow.step = "move_next"
+        # 20.03 : les réserves arrivent par un mouvement d'ingress, à partir du round 2
+        for u in s.reserves_of(flow.active):
+            if s.battle_round >= 2:
+                flow.pending.append(u.id)
+            else:
+                flow.ineligible[u.id] = "en réserve : arrivée à partir du round 2"
+        self._boundary(s, flow, "start", "move_next")
 
     def _auto_move_next(self, s: GameState, flow: Flow) -> None:
-        pending, ineligible = [], {uid: why for uid, why in flow.ineligible.items() if s.unit(uid).embarked_in is not None}
+        pending, ineligible = [], {uid: why for uid, why in flow.ineligible.items() if s.unit(uid).embarked_in is not None or s.unit(uid).in_reserve}
         for uid in flow.pending:
             u = s.unit(uid)
             if u.is_destroyed:
+                continue
+            if u.in_reserve:
+                pending.append(uid)
                 continue
             if u.embarked_in is not None:
                 why = disembark_error(s, u)
@@ -519,18 +585,90 @@ class Engine:
         if isinstance(action, EndPhaseAction):
             for uid in flow.pending:
                 u = s.unit(uid)
-                if u.embarked_in is None:
+                if u.in_reserve:
+                    self._say(s, f"Mouvement : {u.name} reste en réserve", "ingress", unit=uid, stayed=True)
+                elif u.embarked_in is None:
                     self._say(s, f"Mouvement : {u.name} reste immobile", "move", unit=uid, move="stationary")
             flow.pending = []
             flow.step = "move_end"
             return
         flow.pending.remove(action.unit_id)
         flow.unit_id = action.unit_id
-        flow.step = "disembark" if s.unit(action.unit_id).embarked_in is not None else "move"
+        u = s.unit(action.unit_id)
+        if u.in_reserve:
+            flow.ingress_side, flow.after_ingress = None, "move_next"
+            flow.step = "ingress"
+            return
+        flow.step = "disembark" if u.embarked_in is not None else "move"
 
     def _auto_move_end(self, s: GameState, flow: Flow) -> None:
-        """Fin de la phase de mouvement : fenêtre Fire Overwatch pour le joueur inactif (15.08)."""
-        self._open_window(s, flow, "fire_overwatch", other_side(flow.active), "shoot_start")
+        """Fin de la phase de mouvement : fenêtres Fire Overwatch (15.08) puis Rapid Ingress (15.07) pour
+        le joueur inactif."""
+        self._open_window(s, flow, "fire_overwatch", other_side(flow.active), "move_end_ingress")
+
+    def _auto_move_end_ingress(self, s: GameState, flow: Flow) -> None:
+        self._open_window(s, flow, "rapid_ingress", other_side(flow.active), "move_end_bnd")
+
+    def _auto_move_end_bnd(self, s: GameState, flow: Flow) -> None:
+        self._boundary(s, flow, "end", "shoot_start")
+
+    # ---------------------------------------------------------------- réserves (20)
+
+    def _d_ingress(self, s: GameState, flow: Flow) -> Decision:
+        u = s.unit(flow.unit_id)
+        side = flow.ingress_side or flow.active
+        options: List[Action] = [ReserveAction(u.id)] + [DeployAction(u.id, x, y) for x, y in ingress_candidates(s, u)]
+        if has_deep_strike(u):
+            note = "Deep Strike : n'importe où à plus de 8\" de toute unité ennemie (zone adverse comprise)"
+        else:
+            note = "entièrement à 6\" d'un bord de table, à plus de 8\" de toute unité ennemie" + (
+                ", hors de la zone de déploiement adverse (avant le round 3)" if s.battle_round < 3 else "")
+        return Decision("ingress", side, options, unit_id=u.id, note=note, phase="deep_strike" if has_deep_strike(u) else "edge")
+
+    def _a_ingress(self, s: GameState, flow: Flow, action) -> None:
+        u = s.unit(flow.unit_id)
+        side = flow.ingress_side or flow.active
+        nxt = flow.after_ingress or "move_next"
+        flow.ingress_side, flow.after_ingress = None, ""
+        flow.step = nxt
+        if isinstance(action, ReserveAction):
+            self._say(s, f"Mouvement : {u.name} reste en réserve", "ingress", unit=u.id, stayed=True)
+            return
+        pos = _positions(action) if isinstance(action, DeployModelsAction) else formation_at(u, action.x, action.y)
+        self.set_up_unit(s, u, pos)
+        u.arrived = True
+        c = u.centroid
+        how = "Deep Strike" if has_deep_strike(u) else "ingress"
+        self._say(s, f"Mouvement : {u.name} arrive des réserves ({how}) en ({c[0]:.1f}, {c[1]:.1f})", "ingress", unit=u.id, x=round(c[0], 2), y=round(c[1], 2))
+        self._notify(s, side, f"{u.name} arrive des réserves")
+
+    def set_up_unit(self, s: GameState, unit: Unit, positions) -> None:
+        """Pose l'unité sur la table (ingress, figurines revenues…) : elle a été « posée ce tour »."""
+        for m in unit.alive_models:
+            p = positions[m.id]
+            m.move_to(p[0], p[1], p[2] if len(p) > 2 and not m.is_round else None)
+        unit.in_reserve = False
+        unit.disembarked = True  # « set up this turn » : pas de Heavy, pas d'embarquement
+        unit.remained_stationary = False
+
+    def to_reserves(self, s: GameState, unit: Unit, source: str = "", quiet: bool = False) -> None:
+        """Unité remise en réserve stratégique pendant la bataille (20.02, repositioned unit)."""
+        unit.in_reserve = True
+        unit.repositioned = True
+        if not quiet:
+            self._say(s, f"Réserves : {unit.name} retourne en réserve stratégique" + (f" ({source})" if source else ""), "reserve", unit=unit.id, source=source)
+
+    def _end_of_round_reserves(self, s: GameState) -> None:
+        """20.04 : à la fin du round 3, les réserves jamais arrivées sont détruites (sauf 20.02)."""
+        for u in list(s.units.values()):
+            if not u.in_reserve or u.is_destroyed or u.arrived or u.repositioned:
+                continue
+            victims = [u] + [p for p in s.passengers(u.id)]
+            for v in victims:
+                for m in v.models:
+                    m.alive, m.wounds = False, 0
+            self._say(s, f"Réserves : {u.name} n'est jamais arrivée — détruite à la fin du round 3" + (
+                f" (avec {', '.join(p.name for p in victims[1:])})" if len(victims) > 1 else ""), "reserve_destroyed", unit=u.id)
 
     # ---------------------------------------------------------------- transports
 
@@ -622,8 +760,16 @@ class Engine:
         fails = sum(1 for r in rolls if r in rules.hazardous_fail_on)
         per = rules.hazardous_mortal_wounds_vehicle_monster if is_vehicle_or_monster(unit) else rules.hazardous_mortal_wounds_infantry
         mw = fails * per
-        lost = unit.allocate_mortal_wounds(mw) if mw else 0
+        lost = self.mortal_wounds(s, unit, mw) if mw else 0
         return rolls, mw, lost
+
+    def mortal_wounds(self, s: GameState, unit: Unit, n: int) -> int:
+        """Blessures mortelles : Feel No Pain d'abord (révision 3), puis allocation ; figurines perdues."""
+        if n <= 0:
+            return 0
+        if s.rev >= 3:
+            return apply_mortal_wounds(s, unit, n)[0]
+        return unit.allocate_mortal_wounds(n)
 
     def _emergency_disembark(self, s: GameState, transport: Unit) -> None:
         """Transport détruit (V11, 18.05) : pour chaque unité à bord, un jet de danger par figurine,
@@ -655,19 +801,19 @@ class Engine:
 
     def _d_move(self, s: GameState, flow: Flow) -> Decision:
         u = s.unit(flow.unit_id)
-        return Decision("move", flow.active, [MoveAction(u.id, mv) for mv in candidate_moves(s, u)], unit_id=u.id, max_distance=u.move_in)
+        return Decision("move", flow.active, [MoveAction(u.id, mv) for mv in candidate_moves(s, u)], unit_id=u.id, max_distance=self.move_of(s, u))
 
     def _a_move(self, s: GameState, flow: Flow, action) -> None:
         u = s.unit(flow.unit_id)
         if isinstance(action, DeclareAdvanceAction):
-            roll = s.d6()
+            roll = self.advance_roll(s, u)
             flow.roll = roll
-            flow.max_distance = u.move_in + roll
+            flow.max_distance = self.move_of(s, u) + roll + self._mod(s, u, "advance_mod")
             u.advanced = True
             self._say(s, f"Mouvement : {u.name} déclare une Advance — D6 = {roll}, jusqu'à {flow.max_distance:g}\" par figurine", "advance", unit=u.id, roll=roll)
             self._open_window(s, flow, "reroll_advance", flow.active, "advance_move", u.id)
             return
-        msg = self.apply_move_action(s, u, action, u.move_in)
+        msg = self.apply_move_action(s, u, action, self.move_of(s, u))
         self._notify(s, flow.active, msg)
         flow.step = "embark_check" if not (isinstance(action, MoveAction) and action.move.kind == MoveKind.STATIONARY) else "move_next"
 
@@ -693,9 +839,16 @@ class Engine:
     def _auto_shoot_start(self, s: GameState, flow: Flow) -> None:
         s.update_sticky_control()  # fin de la phase de mouvement (14.02 : contrôle à la fin de chaque phase)
         s.phase = "shooting"
+        prune_effects(s)
         s.charge_targets_this_phase = set()
         flow.done = []
-        self._open_window(s, flow, "smokescreen", other_side(flow.active), "shoot_next")
+        self._open_window(s, flow, "smokescreen", other_side(flow.active), "shoot_start_bnd")
+
+    def _auto_shoot_start_bnd(self, s: GameState, flow: Flow) -> None:
+        self._boundary(s, flow, "start", "shoot_next")
+
+    def _auto_shoot_end(self, s: GameState, flow: Flow) -> None:
+        self._boundary(s, flow, "end", "charge_start")
 
     def _auto_shoot_next(self, s: GameState, flow: Flow) -> None:
         eligible, ineligible = [], {}
@@ -710,7 +863,7 @@ class Engine:
         if not eligible:
             if not flow.done and ineligible:
                 self._say(s, "Tir : aucune unité ne peut tirer — " + " ; ".join(f"{uid} : {why}" for uid, why in ineligible.items()), "shoot_skip")
-            flow.step = "charge_start"
+            flow.step = "shoot_end"
             return
         flow.eligible, flow.ineligible = eligible, ineligible
         flow.step = "shoot_select"
@@ -738,7 +891,7 @@ class Engine:
 
     def _a_shoot_select(self, s: GameState, flow: Flow, action) -> None:
         if isinstance(action, EndPhaseAction):
-            flow.step = "charge_start"
+            flow.step = "shoot_end"
             return
         if isinstance(action, StratagemAction):
             self._use_explosives(s, flow, action)
@@ -746,11 +899,12 @@ class Engine:
             return
         flow.done.append(action.unit_id)
         flow.unit_id = action.unit_id
-        flow.step = "shoot"
+        self._open_window(s, flow, "detachment_selected", flow.active, "shoot", action.unit_id)
 
     def _d_shoot(self, s: GameState, flow: Flow) -> Decision:
         u = s.unit(flow.unit_id)
-        options = [ShootAction(u.id, None)] + [ShootAction(u.id, t.id) for t in shooting_targets(s, u)]
+        on_table = not (u.is_destroyed or u.in_reserve or u.embarked_in is not None)
+        options = [ShootAction(u.id, None)] + ([ShootAction(u.id, t.id) for t in shooting_targets(s, u)] if on_table else [])
         return Decision("shoot", flow.active, options, unit_id=u.id)
 
     def _a_shoot(self, s: GameState, flow: Flow, action: ShootAction) -> None:
@@ -759,7 +913,17 @@ class Engine:
             self._say(s, f"Tir : {u.name} ne tire pas", "shoot", unit=u.id, target=None)
             flow.step = "shoot_next"
             return
-        target = s.unit(action.target_id)
+        # l'unité visée peut réagir (stratagèmes « just after an enemy unit has selected its targets »)
+        flow.target_id = action.target_id
+        self._open_window(s, flow, "detachment_targets", s.unit(action.target_id).side, "shoot_resolve", u.id)
+
+    def _auto_shoot_resolve(self, s: GameState, flow: Flow) -> None:
+        u = s.unit(flow.unit_id)
+        target = s.unit(flow.target_id)
+        flow.step = "shoot_next"
+        if u.is_destroyed or target.is_destroyed or u.in_reserve or target.in_reserve:
+            self._say(s, f"Tir : {u.name} ne tire pas (cible ou tireur retiré)", "shoot", unit=u.id, target=None)
+            return
         report = resolve_shooting(s, u, target)
         s.charge_targets_this_phase.add(target.id)
         self._say(s, f"Tir : {report}", "shoot", unit=u.id, target=target.id, damage=report.damage, slain=report.models_slain,
@@ -780,7 +944,7 @@ class Engine:
         if unit.is_destroyed or unit.no_charge or unit.embarked_in is not None or s.is_engaged(unit):
             return []
         thrill = unit.has_ability("Thrill Seekers")
-        if (unit.advanced or unit.fell_back) and not thrill:
+        if (unit.advanced and not (thrill or self._has(s, unit, "advance_and_charge"))) or (unit.fell_back and not (thrill or self._has(s, unit, "fall_back_and_charge"))):
             return []
         out = []
         for e in s.enemies_of(unit.side):
@@ -802,9 +966,9 @@ class Engine:
         if s.is_engaged(unit):
             return "déjà à portée d'engagement d'un ennemi"
         thrill = unit.has_ability("Thrill Seekers")
-        if unit.advanced and not thrill:
+        if unit.advanced and not (thrill or self._has(s, unit, "advance_and_charge")):
             return "a fait une Advance ce tour"
-        if unit.fell_back and not thrill:
+        if unit.fell_back and not (thrill or self._has(s, unit, "fall_back_and_charge")):
             return "s'est repliée ce tour"
         enemies = s.enemies_of(unit.side)
         if not enemies:
@@ -819,9 +983,10 @@ class Engine:
     def _auto_charge_start(self, s: GameState, flow: Flow) -> None:
         s.update_sticky_control()  # fin de la phase de tir
         s.phase = "charge"
+        prune_effects(s)
         s.charge_targets_this_phase = set()
         flow.done = []
-        flow.step = "charge_next"
+        self._boundary(s, flow, "start", "charge_next")
 
     def _auto_charge_next(self, s: GameState, flow: Flow) -> None:
         eligible, ineligible = [], {}
@@ -865,10 +1030,10 @@ class Engine:
             flow.done.append(u.id)
             flow.step = "charge_next"
             return
-        roll = s.roll(2)
+        roll = s.roll(2) + self._mod(s, u, "charge_mod")
         flow.roll = roll
         flow.charger = None
-        if s.stratagems:  # Command Re-roll : proposé si la charge rate ou n'atteint pas toutes les cibles
+        if s.stratagems:  # le joueur voit ce que son jet atteint avant de décider de relancer
             flow.reachable = [t.id for t in charge_reachable_targets(s, u, [s.unit(t) for t in flow.candidates], roll)]
         self._open_window(s, flow, "reroll_charge", flow.active, "charge_roll_result", u.id)
 
@@ -902,7 +1067,10 @@ class Engine:
 
     def _auto_charge_end(self, s: GameState, flow: Flow) -> None:
         """Fin de la phase de charge : fenêtre Heroic Intervention pour le joueur inactif (15.11)."""
-        self._open_window(s, flow, "heroic_intervention", other_side(flow.active), "fight_start")
+        self._open_window(s, flow, "heroic_intervention", other_side(flow.active), "charge_end_bnd")
+
+    def _auto_charge_end_bnd(self, s: GameState, flow: Flow) -> None:
+        self._boundary(s, flow, "end", "fight_start")
 
     def charge_target_options(self, s: GameState, unit: Unit, reachable: List[str]) -> List[ChargeAction]:
         """Choix des cibles (V11 11.04 : une ou plusieurs unités à portée du jet) : chaque cible seule,
@@ -921,10 +1089,10 @@ class Engine:
         return out
 
     def _after_charge(self, flow: Flow) -> str:
-        """Étape suivant une charge résolue : la suivante, ou le combat après une Heroic Intervention."""
+        """Étape suivant une charge résolue : la suivante, ou la fin de la phase après une Heroic Intervention."""
         if flow.hi:
             flow.hi, flow.charger = False, None
-            return "fight_start"
+            return "charge_end_bnd"
         return "charge_next"
 
     def _d_charge_target(self, s: GameState, flow: Flow) -> Decision:
@@ -997,7 +1165,7 @@ class Engine:
     def fight_pool(self, s: GameState, fights_first: bool) -> Dict[str, List[Unit]]:
         pool: Dict[str, List[Unit]] = {side: [] for side in SIDES}
         for u in s.on_table_units():
-            if u.fights_first != fights_first or not self.fight_eligible(s, u):
+            if self.has_fights_first(s, u) != fights_first or not self.fight_eligible(s, u):
                 continue
             if u.id not in s.flow.fight_seen:
                 s.flow.fight_seen.append(u.id)
@@ -1008,6 +1176,7 @@ class Engine:
     def _auto_fight_start(self, s: GameState, flow: Flow) -> None:
         s.update_sticky_control()  # fin de la phase de charge
         s.phase = "fight"
+        prune_effects(s)
         for u in s.units.values():
             u.has_fought = False
         flow.fights_first = True
@@ -1016,7 +1185,7 @@ class Engine:
         flow.fight_start_engaged = []
         flow.fight_seen = []
         flow.forced_fighter = None
-        flow.step = "pile_in_step"
+        self._boundary(s, flow, "start", "pile_in_step")
 
     def _auto_pile_in_step(self, s: GameState, flow: Flow) -> None:
         """12.02 : pile-in de toutes les unités éligibles (engagées ou qui ont chargé), joueur actif d'abord."""
@@ -1063,10 +1232,22 @@ class Engine:
         flow.unit_id, flow.target_id = action.unit_id, action.target_id
         if flow.forced_fighter == action.unit_id:
             flow.forced_fighter = None
-        self._open_window(s, flow, "epic_challenge", flow.fight_side, "fight_resolve", action.unit_id)
+        self._open_window(s, flow, "epic_challenge", flow.fight_side, "fight_selected", action.unit_id)
+
+    def _auto_fight_selected(self, s: GameState, flow: Flow) -> None:
+        self._open_window(s, flow, "detachment_selected", flow.fight_side, "fight_targets", flow.unit_id)
+
+    def _auto_fight_targets(self, s: GameState, flow: Flow) -> None:
+        self._open_window(s, flow, "detachment_targets", s.unit(flow.target_id).side, "fight_resolve", flow.unit_id)
 
     def _auto_fight_resolve(self, s: GameState, flow: Flow) -> None:
         unit = s.unit(flow.unit_id)
+        if unit.is_destroyed or unit.in_reserve:
+            unit.has_fought = True
+            flow.last_activator = flow.fight_side
+            flow.fight_side = other_side(flow.fight_side)
+            flow.step = "fight_next"
+            return
         self.activate_fight(s, unit, s.unit(flow.target_id))
         flow.last_activator = flow.fight_side
         flow.fight_side = other_side(flow.fight_side)
@@ -1139,7 +1320,7 @@ class Engine:
                             flow.fight_seen.append(eid)
                         self.activate_fight(s, e, u)
         s.update_sticky_control()  # fin de la phase de combat
-        flow.step = "end_turn"
+        self._boundary(s, flow, "end", "end_turn")
 
     # ---------------------------------------------------------------- fin de tour et de partie
 
@@ -1155,6 +1336,12 @@ class Engine:
         gained = s.scoreboard.add_all(events)
         for e in events:
             self._say(s, f"Score (fin de tour) : {e.reason} → +{e.vp} VP", "score", side=side, vp=e.vp, when="end_turn")
+        # 23.02 : à la fin du tour adverse, les AIRCRAFT sur la table retournent en réserve
+        for u in s.units_of(other_side(side)):
+            if u.has_keyword("Aircraft"):
+                self.to_reserves(s, u, "AIRCRAFT")
+        if flow.turn_index == 1 and s.battle_round == 3:
+            self._end_of_round_reserves(s)
         self._say(s, f"Fin du tour de {side} : {s.summary()}", "turn_end", side=side)
         self._notify(s, side, f"Fin du tour de {side}" + (f" : +{gained} VP" if gained else ""))
         self._emit(s, {"kind": "turn_end", "side": side})
@@ -1185,7 +1372,7 @@ class Engine:
             self._say(s, f"Cohérence : {u.name} n'est plus en cohérence en fin de tour — {len(lost)} figurine(s) retirée(s)", "coherency", unit=u.id, lost=len(lost))
 
     def battle_over(self, s: GameState) -> bool:
-        return any(not s.units_of(side) for side in SIDES)
+        return any(not s.units_of(side, include_embarked=True, include_reserves=True) for side in SIDES)
 
     def _auto_battle_end(self, s: GameState, flow: Flow) -> None:
         s.phase = "end_battle"
@@ -1217,15 +1404,39 @@ class Engine:
         return getattr(self, "_opts_" + flow.window)(s, flow, flow.window_side)
 
     def _d_stratagem(self, s: GameState, flow: Flow) -> Decision:
+        if flow.window.startswith("detachment"):
+            opts = self._window_options(s, flow)
+            from .free import stratagem_name
+
+            names = ", ".join(sorted({stratagem_name(s, flow.window_side, o.stratagem_id) for o in opts}))
+            note = {"detachment_targets": "l'ennemi vient de choisir ses cibles", "detachment_selected": "ton unité vient d'être choisie",
+                    "detachment_start": "début de la phase", "detachment_end": "fin de la phase"}.get(flow.window, "") + \
+                f" — stratagèmes possibles : {names}. Tu as {s.cp.get(flow.window_side, 0)} CP."
+            return Decision("stratagem", flow.window_side, list(opts) + [StratagemAction(None)], unit_id=None, phase=s.phase, note=note, window=flow.window)
         key, when = WINDOWS[flow.window]
         st = CORE_STRATAGEMS[key]
         options: List[Action] = list(self._window_options(s, flow)) + [StratagemAction(None)]
         note = f"{st.name} ({st.ref}, {cost_of(key)} CP) — {when} : {st.summary}. Tu as {s.cp.get(flow.window_side, 0)} CP."
+        if flow.window == "reroll_charge":
+            u = s.unit(flow.window_unit)
+            reach = ", ".join(f"{t} ({charge_gap(u, s.unit(t)):.1f}\")" for t in flow.reachable) or "aucune cible"
+            far = ", ".join(f"{t} ({charge_gap(u, s.unit(t)):.1f}\")" for t in flow.candidates if t not in flow.reachable)
+            note = f"Jet de charge {flow.roll}" + (" (double 1 : échec)" if flow.roll == 2 else "") + f" — atteignable : {reach}" \
+                   + (f" ; hors d'atteinte : {far}" if far else "") + ". " + note
+        elif flow.window == "reroll_advance":
+            note = f"Jet d'Advance {flow.roll} (jusqu'à {flow.max_distance:g}\"). " + note
         return Decision("stratagem", flow.window_side, options, unit_id=None, phase=s.phase, note=note, window=flow.window)
 
-    def _a_stratagem(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+    def _a_stratagem(self, s: GameState, flow: Flow, action) -> None:
         flow.window = ""
         flow.step = flow.resume  # l'effet peut rediriger (Heroic Intervention → charge)
+        if isinstance(action, UseStratagemAction):  # stratagème de détachement proposé dans une fenêtre
+            from .free import apply_free
+
+            text = apply_free(self, s, flow.window_side, action)
+            self._say(s, text, "stratagem", side=flow.window_side)
+            self._notify(s, flow.window_side, text)
+            return
         if action.stratagem is None:
             return
         getattr(self, "_use_" + action.stratagem)(s, flow, action)
@@ -1233,6 +1444,61 @@ class Engine:
     def _strat_say(self, s: GameState, side: str, key: str, text: str, cost: int, **data) -> None:
         st = CORE_STRATAGEMS[key]
         self._say(s, f"Stratagème {st.name} ({cost} CP, reste {s.cp[side]}) — {side} : {text}", "stratagem", side=side, stratagem=key, cost=cost, **data)
+
+    # --- stratagèmes de détachement (révision 3) : fenêtres selon le moment traduit du WHEN
+
+    def _detachment_options(self, s: GameState, side: str, moment: str, units: List[Unit], target_id: Optional[str] = None,
+                            limit: int = 24) -> List[UseStratagemAction]:
+        from ..rules_compiler import compile_stratagem
+        from .free import stratagem_timing_error, target_ok
+        from .stratagems import key_of
+
+        if s.rev < 3 or not s.stratagems:
+            return []
+        out: List[UseStratagemAction] = []
+        for st in s.stratagem_book.get(side, []):
+            if not st.detachment_id:  # les stratagèmes de base ont leurs propres fenêtres
+                continue
+            comp = compile_stratagem(st)
+            if comp.timing.moment != moment or s.phase not in comp.timing.phases or stratagem_timing_error(s, side, st) is not None:
+                continue
+            if comp.choices or (comp.needs_enemy and target_id is None):
+                continue  # un choix à faire : par le panneau des stratagèmes
+            for u in units:
+                if u.is_destroyed or not target_ok(u, st):
+                    continue
+                if unavailable(s, side, key_of(st.name), u, cost=st.cp or 0) is not None:
+                    continue
+                out.append(UseStratagemAction(st.id, u.id, target_id=target_id))
+                if len(out) >= limit:
+                    return out
+        return out
+
+    def _opts_detachment_targets(self, s: GameState, flow: Flow, side: str) -> List[UseStratagemAction]:
+        """L'ennemi vient de choisir ses cibles (tir ou combat) : l'unité visée peut réagir."""
+        target = s.unit(flow.target_id)
+        return self._detachment_options(s, side, "targets_selected", [target], target_id=flow.window_unit)
+
+    def _opts_detachment_selected(self, s: GameState, flow: Flow, side: str) -> List[UseStratagemAction]:
+        """Une unité du joueur vient d'être choisie pour tirer ou combattre."""
+        return self._detachment_options(s, side, "selected", [s.unit(flow.window_unit)])
+
+    def _opts_detachment_start(self, s: GameState, flow: Flow, side: str) -> List[UseStratagemAction]:
+        return self._detachment_options(s, side, "start", s.units_of(side))
+
+    def _opts_detachment_end(self, s: GameState, flow: Flow, side: str) -> List[UseStratagemAction]:
+        return self._detachment_options(s, side, "end", s.units_of(side))
+
+    def _boundary(self, s: GameState, flow: Flow, moment: str, resume: str) -> None:
+        """Début / fin de phase : fenêtre des stratagèmes de détachement, joueur actif puis adversaire."""
+        flow.bnd_moment, flow.bnd_resume = moment, resume
+        flow.step = "boundary_a"
+
+    def _auto_boundary_a(self, s: GameState, flow: Flow) -> None:
+        self._open_window(s, flow, "detachment_" + flow.bnd_moment, flow.active, "boundary_b")
+
+    def _auto_boundary_b(self, s: GameState, flow: Flow) -> None:
+        self._open_window(s, flow, "detachment_" + flow.bnd_moment, other_side(flow.active), flow.bnd_resume)
 
     # --- Command Re-roll (15.02) : jets d'Advance et de charge
 
@@ -1246,8 +1512,10 @@ class Engine:
         u = s.unit(flow.window_unit)
         if unavailable(s, side, "command_reroll", u) is not None:
             return []
-        if flow.roll != 2 and len(flow.reachable) >= len(flow.candidates):
-            return []  # toutes les cibles sont déjà atteignables : relancer ne peut rien apporter de sûr
+        if flow.roll >= 12:
+            return []  # rien de mieux possible (on peut vouloir une charge plus longue même si une cible est atteinte)
+        if s.rev < 3 and flow.roll != 2 and len(flow.reachable) >= len(flow.candidates):
+            return []  # parties enregistrées en révision 2 : fenêtre seulement si une cible manquait
         return [StratagemAction("command_reroll", u.id, mode="charge")]
 
     def _use_command_reroll(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
@@ -1257,7 +1525,7 @@ class Engine:
         old = flow.roll
         if action.mode == "advance":
             flow.roll = s.d6()
-            flow.max_distance = u.move_in + flow.roll
+            flow.max_distance = self.move_of(s, u) + flow.roll + self._mod(s, u, "advance_mod")
             self._strat_say(s, side, "command_reroll", f"{u.name} relance son jet d'Advance : {old} → {flow.roll}, jusqu'à {flow.max_distance:g}\"", cost, unit=u.id, roll=flow.roll)
         else:
             flow.roll = s.roll(2)  # une charge se relance en entier (les deux dés)
@@ -1303,7 +1571,7 @@ class Engine:
         cost = record_use(s, u.side, "explosives", u.id, detail=t.id)
         rolls = [s.d6() for _ in range(6)]
         mw = sum(1 for r in rolls if r >= 4)
-        lost = t.allocate_mortal_wounds(mw) if mw else 0
+        lost = self.mortal_wounds(s, t, mw)
         self._strat_say(s, u.side, "explosives", f"{u.name} lance ses grenades sur {t.name} : {rolls} → {mw} BM ({lost} fig.)"
                         + (" — UNITÉ DÉTRUITE" if t.is_destroyed else ""), cost, unit=u.id, target=t.id, rolls=rolls, mortal_wounds=mw)
         self._notify(s, u.side, s.log[-1] if s.log else "Explosives")
@@ -1333,8 +1601,8 @@ class Engine:
         rolls = [s.d6() for _ in range(m.profile.toughness)]
         own = min(6, sum(1 for r in rolls if r == 1))
         dealt = min(6, sum(1 for r in rolls if r >= 5))
-        lost_t = t.allocate_mortal_wounds(dealt) if dealt else 0
-        lost_u = u.allocate_mortal_wounds(own) if own else 0
+        lost_t = self.mortal_wounds(s, t, dealt)
+        lost_u = self.mortal_wounds(s, u, own)
         self._strat_say(s, u.side, "crushing_impact", f"{u.name} écrase {t.name} : {len(rolls)}D6 {rolls} → {dealt} BM à {t.name} ({lost_t} fig.), "
                         f"{own} BM à {u.name} ({lost_u} fig.)", cost, unit=u.id, target=t.id, rolls=rolls)
         self._notify(s, u.side, s.log[-1] if s.log else "Crushing Impact")
@@ -1372,6 +1640,22 @@ class Engine:
         if u.is_destroyed:
             s.destroyed_this_turn += 1
             self.on_unit_destroyed(s, u)
+
+    # --- Rapid Ingress (15.07) : fin de la phase de mouvement adverse
+
+    def _opts_rapid_ingress(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        if s.battle_round < 2 or unavailable(s, side, "rapid_ingress") is not None:
+            return []
+        return [StratagemAction("rapid_ingress", u.id) for u in s.reserves_of(side)
+                if not u.has_keyword("Aircraft") and unavailable(s, side, "rapid_ingress", u) is None]
+
+    def _use_rapid_ingress(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        cost = record_use(s, u.side, "rapid_ingress", u.id)
+        self._strat_say(s, u.side, "rapid_ingress", f"{u.name} arrive des réserves", cost, unit=u.id)
+        flow.unit_id = u.id
+        flow.ingress_side, flow.after_ingress = u.side, flow.resume
+        flow.step = "ingress"
 
     # --- Smokescreen (15.10) : début de la phase de tir adverse
 
@@ -1438,7 +1722,7 @@ class Engine:
         if not flow.fights_first or unavailable(s, side, "counteroffensive") is not None:
             return []  # hors de l'étape Fights First, l'alternance donne déjà la main au joueur inactif
         return [StratagemAction("counteroffensive", u.id) for u in s.units_of(side)
-                if not u.fights_first and self.fight_eligible(s, u) and self.fight_options(s, u) and unavailable(s, side, "counteroffensive", u) is None]
+                if not self.has_fights_first(s, u) and self.fight_eligible(s, u) and self.fight_options(s, u) and unavailable(s, side, "counteroffensive", u) is None]
 
     def _use_counteroffensive(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
         u = s.unit(action.unit_id)
@@ -1450,6 +1734,29 @@ class Engine:
         self._strat_say(s, u.side, "counteroffensive", f"{u.name} gagne Fights First et combat tout de suite", cost, unit=u.id)
 
     # ================================================================ règles partagées
+
+    def advance_roll(self, s: GameState, unit: Unit) -> int:
+        """Jet d'Advance (D6), ou distance fixe si un effet dit « do not make an Advance roll »."""
+        if s.effects:
+            from .effects import active_effects
+
+            fixed = [int(e.value) for e in active_effects(s, unit.id, ("advance_fixed",)) if e.value is not None]
+            if fixed:
+                return max(fixed)
+        return s.d6()
+
+    def move_of(self, s: GameState, unit: Unit) -> float:
+        """M de l'unité avec les effets actifs (« add 2" to the Move characteristic »)."""
+        return unit.move_in + (effect_total(s, unit.id, "move_mod") if s.effects else 0)
+
+    def _mod(self, s: GameState, unit: Unit, kind: str) -> int:
+        return effect_total(s, unit.id, kind) if s.effects else 0
+
+    def _has(self, s: GameState, unit: Unit, kind: str) -> bool:
+        return bool(s.effects) and has_effect(s, unit.id, kind)
+
+    def has_fights_first(self, s: GameState, unit: Unit) -> bool:
+        return unit.fights_first or self._has(s, unit, "fights_first")
 
     def deployment_ok(self, s: GameState, unit: Unit, x: float, y: float) -> bool:
         """L'unité, centrée en (x, y) dans sa formation actuelle, est-elle entièrement dans sa zone,
@@ -1544,8 +1851,8 @@ class Engine:
             self._say(s, msg, "move", unit=unit.id, move="stationary")
             return msg
         if move.kind == MoveKind.ADVANCE:
-            roll = s.d6()
-            max_d = unit.move_in + roll
+            roll = self.advance_roll(s, unit)
+            max_d = self.move_of(s, unit) + roll + self._mod(s, unit, "advance_mod")
             mv = shrink_to_legal(s, unit, move, max_d)
             unit.advanced = True
             if mv is None or mv.distance <= 1e-6:
@@ -1596,7 +1903,7 @@ class Engine:
             victims = [o for o in s.on_table_units() if o.id != unit.id
                        and any(disk_gap(w, d) <= s.rules.deadly_demise_range_in for w in wrecks for d in o.disks())]
             for other in victims:
-                lost = other.allocate_mortal_wounds(mw)
+                lost = self.mortal_wounds(s, other, mw)
                 self._say(s, f"      {other.name} subit {mw} BM ({lost} fig. perdue(s))" + (" — UNITÉ DÉTRUITE" if other.is_destroyed else ""), "detail")
                 if other.is_destroyed:
                     if other.side != s.side_to_move:
@@ -1613,15 +1920,31 @@ class Engine:
         if decision.unit_id is not None and uid != decision.unit_id:
             return f"l'action concerne {uid}, la décision porte sur {decision.unit_id}"
         if decision.kind == "deploy":
+            unit = s.unit(uid)
             if isinstance(action, DeployAction):
-                return None if self.deployment_ok(s, s.unit(uid), action.x, action.y) else "formation hors zone, hors table ou sur d'autres figurines"
+                if self.deployment_ok(s, unit, action.x, action.y):
+                    return None
+                if has_infiltrators(unit) and infiltrate_error(s, unit, formation_at(unit, action.x, action.y)) is None:
+                    return None
+                return "formation hors zone, hors table ou sur d'autres figurines"
             if isinstance(action, DeployModelsAction):
-                return check_model_positions(s, s.unit(uid), _positions(action), "deploy", 0.0)
+                err = check_model_positions(s, unit, _positions(action), "deploy", 0.0)
+                if err and has_infiltrators(unit):
+                    alt = infiltrate_error(s, unit, _positions(action))
+                    return None if alt is None else f"{err} (Infiltrators : {alt})"
+                return err
             return "action de déploiement attendue"
+        if decision.kind == "ingress":
+            unit = s.unit(uid)
+            if isinstance(action, DeployModelsAction):
+                return ingress_error(s, unit, _positions(action))
+            if isinstance(action, DeployAction):
+                return ingress_error(s, unit, formation_at(unit, action.x, action.y))
+            return "placement d'arrivée attendu"
         if decision.kind in ("move", "advance_move"):
             unit = s.unit(uid)
             engaged = s.is_engaged(unit)
-            max_d = decision.max_distance if decision.max_distance is not None else unit.move_in
+            max_d = decision.max_distance if decision.max_distance is not None else self.move_of(s, unit)
             if isinstance(action, DeclareAdvanceAction):
                 if decision.kind != "move":
                     return "l'Advance est déjà déclarée"
@@ -1693,6 +2016,9 @@ class Engine:
         s = initial.clone()
         self.start(s, deploy=deploy, first_player=first_player)
         for side, action in history:
+            if isinstance(action, FREE_ACTIONS):
+                self.apply_free(s, side, action, validate=False)
+                continue
             d = self.decision(s)
             if d is None:
                 raise IllegalAction("historique plus long que la partie")

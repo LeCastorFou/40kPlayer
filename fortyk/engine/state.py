@@ -149,6 +149,9 @@ class Unit:
     battle_shocked: bool = False
     fights_first: bool = False
     embarked_in: Optional[str] = None  #: transport dans lequel l'unité est embarquée (hors table)
+    in_reserve: bool = False  #: en réserve stratégique (20) : hors table, arrive par un mouvement d'ingress
+    arrived: bool = False  #: a fait au moins un mouvement d'ingress (20.04)
+    repositioned: bool = False  #: remise en réserve pendant la bataille (20.02) : pas détruite à la fin du round 3
     last_shot_turn: int = -10  #: numéro du dernier tour de joueur où l'unité a fait des attaques à distance (Hidden)
     # --- composition (listes importées)
     leaders: Tuple[Datasheet, ...] = ()  #: personnages qui mènent l'unité (Leader) : leurs figurines sont dans ``models``
@@ -414,6 +417,10 @@ class Flow:
     hi: bool = False  #: une Heroic Intervention est en cours (la charge est celle du joueur inactif)
     charger: Optional[str] = None  #: camp de l'unité qui charge (None = joueur actif)
     forced_fighter: Optional[str] = None  #: Counteroffensive : unité qui doit combattre ensuite
+    ingress_side: Optional[str] = None  #: Rapid Ingress : camp (inactif) qui fait l'ingress
+    after_ingress: str = ""  #: étape après un ingress hors de la phase de mouvement du joueur actif
+    bnd_moment: str = ""  #: fenêtre de début / fin de phase en cours (stratagèmes de détachement)
+    bnd_resume: str = ""
     decision: object = None  #: décision en attente, mise en cache (partagée entre clones : immuable)
 
     def clone(self) -> "Flow":
@@ -459,9 +466,15 @@ class GameState:
     stratagems: bool = False
     #: stratagèmes utilisés : (camp, clé, unité, tour, phase, détail) — limites de 15.01 et effets en cours
     strat_used: List[tuple] = field(default_factory=list)
-    #: révision des règles du moteur : 2 = drapeaux « ce tour » remis à zéro pour les deux camps à chaque
-    #: tour (1 = comportement des parties enregistrées avant, rejouées à l'identique)
-    rev: int = 2
+    #: effets de règles à durée limitée (voir :mod:`fortyk.engine.effects`)
+    effects: List = field(default_factory=list)
+    #: stratagèmes jouables par camp (base + détachements de la liste) : fortyk.data.detachments.Stratagem
+    stratagem_book: Dict[str, list] = field(default_factory=dict)
+    #: révision des règles du moteur (une partie enregistrée se rejoue avec les règles de sa révision) :
+    #: 1 = d'origine ; 2 = drapeaux « ce tour » remis à zéro pour les deux camps, stratagèmes de base ;
+    #: 3 = Feel No Pain contre les blessures mortelles, relance de charge toujours proposée, fenêtres
+    #: des stratagèmes de détachement
+    rev: int = 3
     charge_targets_this_phase: Set[str] = field(default_factory=set)
     log: List[str] = field(default_factory=list)
     events: List[dict] = field(default_factory=list)  #: journal structuré (voir Engine._say)
@@ -493,15 +506,19 @@ class GameState:
             self._los = line_of_sight_for(self.terrain)
         return self._los
 
-    def units_of(self, side: str, alive_only: bool = True, include_embarked: bool = False) -> List[Unit]:
+    def units_of(self, side: str, alive_only: bool = True, include_embarked: bool = False, include_reserves: bool = False) -> List[Unit]:
         """Unités du camp sur la table (les unités embarquées dans un transport n'y sont pas, sauf
-        ``include_embarked``)."""
+        ``include_embarked`` ; ni celles en réserve, sauf ``include_reserves``)."""
         return [u for u in self.units.values() if u.side == side and (not alive_only or not u.is_destroyed)
-                and (include_embarked or u.embarked_in is None)]
+                and (include_embarked or u.embarked_in is None) and (include_reserves or not u.in_reserve)]
+
+    def reserves_of(self, side: str) -> List[Unit]:
+        """Unités du camp en réserve stratégique (hors celles embarquées dans un transport en réserve)."""
+        return [u for u in self.units.values() if u.side == side and u.in_reserve and not u.is_destroyed and u.embarked_in is None]
 
     def on_table_units(self) -> List[Unit]:
-        """Toutes les unités présentes sur la table (ni détruites ni embarquées)."""
-        return [u for u in self.units.values() if not u.is_destroyed and u.embarked_in is None]
+        """Toutes les unités présentes sur la table (ni détruites ni embarquées ni en réserve)."""
+        return [u for u in self.units.values() if not u.is_destroyed and u.embarked_in is None and not u.in_reserve]
 
     def passengers(self, transport_id: str) -> List[Unit]:
         """Unités embarquées dans ce transport."""
@@ -514,7 +531,7 @@ class GameState:
         return self.units[unit_id]
 
     def all_alive_models(self, exclude_unit: Optional[str] = None) -> List[Model]:
-        return [m for u in self.units.values() if u.id != exclude_unit and u.embarked_in is None for m in u.alive_models]
+        return [m for u in self.units.values() if u.id != exclude_unit and u.embarked_in is None and not u.in_reserve for m in u.alive_models]
 
     def enemy_models(self, side: str) -> List[Model]:
         return [m for u in self.enemies_of(side) for m in u.alive_models]
@@ -558,11 +575,16 @@ class GameState:
         rules = self.rules
         levels = {side: 0 for side in SIDES}
         for u in self.units.values():
-            if u.battle_shocked or u.embarked_in is not None:
+            if u.battle_shocked or u.embarked_in is not None or u.in_reserve:
                 continue
+            bonus = 0
+            if self.effects:
+                from .effects import effect_total
+
+                bonus = effect_total(self, u.id, "oc_mod")
             for m in u.models:
                 if m.alive and disk_in_objective_range(m.disk, objective, rules):
-                    levels[u.side] += m.profile.oc
+                    levels[u.side] += max(0, m.profile.oc + bonus)
         return levels
 
     def objective_controller(self, objective: ObjectivePoint) -> Optional[str]:
@@ -624,6 +646,7 @@ class GameState:
         new.charge_targets_this_phase = set(self.charge_targets_this_phase)
         new.cp = dict(self.cp)
         new.strat_used = list(self.strat_used)
+        new.effects = list(self.effects)
         new.flow = self.flow.clone() if self.flow is not None else None
         keep = self.recording if record is None else record
         new.recording = keep

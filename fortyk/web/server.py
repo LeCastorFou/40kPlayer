@@ -209,7 +209,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/healthz":
                 return self._json({"ok": True, "storage": self.app.storage_status()})
             if path == "/api/config":
-                return self._json({"join_codes": True, "stratagems": True, "rev": 2})
+                return self._json({"join_codes": True, "stratagems": True, "rev": 3})
             if path == "/api/games":
                 return self._json({"games": self.app.store.summaries()})
             if path == "/api/lists":
@@ -302,6 +302,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json(room.set_settings(token, payload))
                 if what == "check":
                     return self._json(room.check(token, payload))
+                if what == "free":
+                    return self._json(room.free(token, payload))
             self.send_error(404)
         except RoomError as err:
             self._json({"ok": False, "error": str(err), **({"deleted": True} if isinstance(err, RoomDeleted) else {})})

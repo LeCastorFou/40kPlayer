@@ -120,6 +120,26 @@ class StratagemTests(unittest.TestCase):
         self.assertEqual((d.kind, d.max_distance), ("charge_move", 12.0))
         self.assertTrue(any("relance son jet de charge : 2 → 12" in l for l in s.log))
 
+    def test_charge_reroll_offered_even_when_a_target_is_reached(self):
+        """Valentin : on peut vouloir une charge plus longue même si une unité est atteignable."""
+        for rev, expected in ((3, "stratagem"), (2, "charge_move")):
+            s = new_toy_state(self.cat, seed=1)
+            park_all(s)
+            s.stratagems, s.rev = True, rev
+            s.cp = {"attacker": 3, "defender": 3}
+            place(s.units["SM1"], 42, 26)
+            place(s.units["EC1"], 42, 35)
+            eng = Engine()
+            eng.start_at(s, "charge", "attacker")
+            eng.step(s, SelectUnitAction("SM1"))
+            it = iter((4, 4))
+            s.d6 = lambda: next(it, 3)
+            eng.step(s, DeclareChargeAction("SM1"))
+            d = eng.decision(s)
+            self.assertEqual(d.kind, expected, f"révision {rev}")
+            if rev == 3:
+                self.assertIn("atteignable : EC1", d.note)
+
     # ------------------------------------------------------------------ Fire Overwatch, Smokescreen
 
     def test_fire_overwatch_at_end_of_opponent_movement(self):

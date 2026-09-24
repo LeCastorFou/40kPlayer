@@ -38,6 +38,21 @@
   button.primary:hover { background:#38804a; }
   button.warn { background:#6b3a2f; border-color:#8f4f3f; }
   button.strat { background:#3d3170; border-color:#6a58b8; }
+  #rules { display:none; flex:0 0 auto; max-height:46vh; overflow:auto; background:#1f2124; border-bottom:1px solid #000; padding:8px 12px; font-size:12.5px; }
+  #rules.open { display:block; }
+  #rules .tabs { display:flex; gap:6px; margin-bottom:6px; align-items:center; }
+  #rules .tabs button.on { outline:2px solid var(--accent); }
+  #rules .st { border-bottom:1px solid #2e3035; padding:5px 0; }
+  #rules .st .meta { color:var(--muted); font-size:11.5px; }
+  #rules .st details { margin:3px 0; color:#cfcac0; } #rules .st summary { cursor:pointer; color:var(--muted); }
+  #rules .badge { font-size:11px; padding:0 6px; border-radius:8px; margin-left:4px; }
+  .badge.auto { background:#2f6b3a; } .badge.partial { background:#7a5c1e; } .badge.manual { background:#555; } .badge.window { background:#3d3170; }
+  #rules label.f { display:flex; gap:6px; align-items:center; margin:4px 0; flex-wrap:wrap; }
+  #rules input, #rules select { background:#15161a; color:var(--ink); border:1px solid #555; border-radius:5px; padding:3px 6px; font-size:12.5px; max-width:100%; }
+  #rules .models { display:flex; flex-wrap:wrap; gap:4px 10px; margin:3px 0; }
+  #rules .why { color:var(--err); font-size:11.5px; }
+  #rules .form { background:#26282c; border:1px solid #3a3d44; border-radius:6px; padding:6px 8px; margin:4px 0; }
+  #reserves { color:var(--muted); font-size:12px; margin-top:2px; }
   button.strat:hover { background:#4a3c88; }
   button.active { outline:2px solid var(--accent); }
   button:disabled { opacity:.4; cursor:not-allowed; }
@@ -57,6 +72,7 @@
   #log .score { color:#9be09b; }
   #log .combat { color:#f0b090; }
   #log .strat { color:#c6b5ff; font-weight:600; }
+  #log .manual { color:#9fd3ff; }
   #log .detail { color:#77787a; }
   #log .err { color:var(--err); }
   .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:12px; background:#444; margin-left:6px; }
@@ -101,9 +117,10 @@
 </div>
 <div id="side">
   <div id="status">
-    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><button id="setbtn" title="Réglages">Réglages</button><button id="delbtn" class="warn" title="Supprimer la partie pour les deux joueurs">Supprimer</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
+    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><button id="rulesbtn" title="Stratagèmes de ta liste et effets manuels (réserves, soins, figurines ramenées…)">Stratagèmes / règles</button><button id="setbtn" title="Réglages">Réglages</button><button id="delbtn" class="warn" title="Supprimer la partie pour les deux joueurs">Supprimer</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
     <h1 id="title">40kPlayer</h1>
     <div class="score"><span>Round <b id="round">–</b></span><span>Phase <b id="phase">–</b></span><span id="turn"></span></div>
+    <div id="reserves"></div>
     <div class="score"><span><span id="nameA">Attaquant</span> <b class="att" id="scoreA">0</b> VP · <b class="att" id="cpA">0</b> CP</span><span><span id="nameD">Défenseur</span> <b class="def" id="scoreD">0</b> VP · <b class="def" id="cpD">0</b> CP</span></div>
   </div>
   <div id="settings">
@@ -119,6 +136,7 @@
   <div id="banner"></div>
   <div id="absence"></div>
   <div id="history"></div>
+  <div id="rules"><div class="tabs"><button id="tab_strat" class="on">Stratagèmes</button><button id="tab_manual">Effet manuel</button><span style="flex:1"></span><button id="rulesclose">Fermer</button></div><div id="rules_body"></div></div>
   <div id="decision"><h2 id="dtitle">Connexion…</h2><div class="observe" id="dobs"></div><div class="hint" id="dhint"></div><div class="btns" id="dbtns"></div><div id="extra"></div><div id="error"></div></div>
   <div id="unitinfo"></div>
   <div id="log"></div>
@@ -211,7 +229,7 @@ async function poll() {
 // ------------------------------------------------------------ état → UI
 function unitById(id) { return S.units.find(u => u.id === id); }
 function humanTurn() { return S && S.pending && S.pending.side === S.human_side && !S.game_over; }
-const PLACING_KINDS = new Set(['deploy', 'move', 'advance_move', 'charge_move', 'scout', 'disembark']);
+const PLACING_KINDS = new Set(['deploy', 'move', 'advance_move', 'charge_move', 'scout', 'disembark', 'ingress']);
 function directMovePhase() { const p = S && S.pending; return humanTurn() && p.kind === 'select_unit' && p.phase === 'movement'; }
 function selectableIds() {
   const p = S.pending; if (!humanTurn()) return new Set();
@@ -221,7 +239,11 @@ function selectableIds() {
 }
 // contexte de placement : décision en cours du moteur, ou mouvement direct d'une unité (« quelle unité ? » sauté)
 function place() {
-  if (!humanTurn() || view.replay) return null;
+  if (view.replay || !S) return null;
+  if (view.manual && view.manual.placing && S.human_side) {  // effet manuel : poser / déplacer / ramener des figurines
+    const u = unitById(view.manual.uid); return u ? { uid: u.id, kind: 'manual', maxd: null, pseudo: false, manual: view.manual.kind } : null;
+  }
+  if (!humanTurn()) return null;
   const p = S.pending;
   if (p.unit_id && PLACING_KINDS.has(p.kind)) return { uid: p.unit_id, kind: p.kind, maxd: p.max_distance, pseudo: false };
   if (local.pseudo && directMovePhase()) { const u = unitById(local.pseudo); return u ? { uid: u.id, kind: 'move', maxd: u.move, pseudo: true } : null; }
@@ -234,6 +256,27 @@ function initPlacement(pl) {
   if (!pl) return;
   const p = S.pending, u = unitById(pl.uid);
   const alive = u.models.filter(m => m.alive);
+  if (pl.kind === 'manual') {
+    const M = view.manual;
+    const ms = M.kind === 'revive' ? u.models.filter(m => !m.alive && M.models.has(m.id)) : alive;
+    const onBoard = m => m.x > 0.5 && m.y > 0.5 && m.x < layout.board[0] - 0.5 && m.y < layout.board[1] - 0.5;
+    let dx = 0, dy = 0;
+    if (M.kind === 'set_up' && !ms.some(onBoard)) {  // jamais posée : au centre de sa zone
+      const z = layout.deployment_zones[u.side];
+      const cx = z.reduce((a, v) => a + v[0], 0) / z.length, cy = z.reduce((a, v) => a + v[1], 0) / z.length;
+      const mx = ms.reduce((a, m) => a + m.x, 0) / ms.length, my = ms.reduce((a, m) => a + m.y, 0) / ms.length;
+      dx = cx - mx; dy = cy - my;
+    }
+    ms.forEach(m => { local.pos[m.id] = withAngle(m, [m.x + dx, m.y + dy]); local.orig[m.id] = [...local.pos[m.id]]; });
+    return;
+  }
+  if (pl.kind === 'ingress') {
+    const c = p.options.find(o => o.x !== undefined);
+    const cx = c ? c.x : layout.board[0] / 2, cy = c ? c.y : 3;
+    const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length;
+    alive.forEach(m => { local.pos[m.id] = withAngle(m, [cx + m.x - mx, cy + m.y - my]); local.orig[m.id] = [...local.pos[m.id]]; });
+    return;
+  }
   if (pl.kind === 'deploy') {
     const z = layout.deployment_zones[u.side];
     let cx = z.reduce((a, v) => a + v[0], 0) / z.length, cy = z.reduce((a, v) => a + v[1], 0) / z.length;
@@ -262,11 +305,12 @@ function onNewState() {
   }
   if (local.pseudo && !(directMovePhase() && selectableIds().has(local.pseudo))) local.pseudo = null;
   const pl = place();
-  const key = p ? [p.kind, p.unit_id, S.battle_round, S.phase, S.log_length, pl ? pl.uid : ''].join('|') : null;
+  const key = pl && pl.manual ? ['manual', pl.uid, pl.manual, view.manual.stamp].join('|')
+    : (p ? [p.kind, p.unit_id, S.battle_round, S.phase, S.log_length, pl ? pl.uid : ''].join('|') : null);
   if (key !== local.decisionKey) { local.decisionKey = key; initPlacement(pl); }
   const st = S.settings || {};
   $('s_auto').checked = !!st.auto_actions; $('s_deploy').checked = !!st.auto_deploy; $('s_step').checked = !!st.step_mode; $('s_strat').checked = st.stratagems !== false;
-  renderStatus(); renderDecision(); renderBanner(); refreshHistory(); renderUnitInfo();
+  renderStatus(); renderDecision(); renderBanner(); refreshHistory(); renderUnitInfo(); renderRules(false);
   rememberGame(); notifyTurn(); checkAbsence();
   if (document.visibilityState === 'visible') markSeen();
 }
@@ -348,8 +392,10 @@ function renderStatus() {
     $('title').innerHTML = `${title} <span class="pill ${me === 'attacker' ? 'att' : 'def'}">tu joues ${SIDE_FR[me]}${fac ? ' — ' + esc(fac) : ''}</span>`;
   } else $('title').innerHTML = `${title} <span class="pill">spectateur</span>`;
   $('turn').textContent = S.game_over ? 'partie terminée' : (S.battle_round ? `tour : ${SIDE_FR[S.side_to_move]}` : '');
+  const res = ['attacker', 'defender'].map(sd => [sd, S.units.filter(u => u.side === sd && u.in_reserve && !u.destroyed)]).filter(([, l]) => l.length);
+  $('reserves').textContent = res.length ? 'En réserve — ' + res.map(([sd, l]) => `${SIDE_FR[sd]} : ${l.map(u => u.name + ' [' + u.id + ']').join(', ')}`).join(' · ') : '';
   $('steplabel').style.display = (S.vs_bot && me) ? '' : 'none';
-  ['undobtn', 'delbtn'].forEach(id => { $(id).style.display = me ? '' : 'none'; });
+  ['undobtn', 'delbtn', 'rulesbtn'].forEach(id => { $(id).style.display = me ? '' : 'none'; });
   $('histbtn').style.display = '';
   $('undobtn').disabled = !S.can_undo;
   $('histbtn').textContent = `Historique (${S.history_length || 0})`;
@@ -445,11 +491,29 @@ function renderDecision() {
   } else if (p.kind === 'deploy') {
     $('dtitle').textContent = `Déploiement : ${uname}`;
     $('dhint').innerHTML = 'Glisse les figurines (ou toute l’unité), tout le socle dans ta zone ; cohérence 2" / 9". Le socle devient rouge si le placement est refusé.';
-    box.appendChild(btn('Valider le déploiement', () => send({ type: 'deploy_models', unit_id: u.id, positions: local.pos }), 'primary', '↵'));
+    if (p.note) $('dhint').innerHTML += `<br><span style="color:#cfd8a8">${esc(p.note)}</span>`;
+    if (p.options.some(o => o.x !== undefined || o.embark)) box.appendChild(btn('Valider le déploiement', () => send({ type: 'deploy_models', unit_id: u.id, positions: local.pos }), 'primary', '↵'));
     p.options.filter(o => o.embark && o.transport_id).forEach(o => box.appendChild(btn(`Commencer à bord : ${o.label.replace('Embarquer dans ', '')}`, () => send({ type: 'option', index: o.index }))));
+    p.options.filter(o => o.reserve).forEach(o => box.appendChild(btn('Placer en réserve stratégique', () => send({ type: 'option', index: o.index }), 'strat')));
     box.appendChild(btn('Réinitialiser', resetLocal));
     placementTools(box, u);
     autoDeployButton(box);
+    updateMoveExtra();
+  } else if (p.kind === 'ingress') {
+    const deep = p.phase === 'deep_strike';
+    $('dtitle').textContent = `Arrivée des réserves : ${uname}` + (deep ? ' (Deep Strike)' : '');
+    $('dhint').innerHTML = `Glisse l’unité puis valide : ${esc(p.note || '')}. Zone permise en vert, 8" autour des ennemis en rouge.`;
+    box.appendChild(btn('Arriver ici', () => send({ type: 'deploy_models', unit_id: u.id, positions: local.pos }), 'primary', '↵'));
+    const stay = p.options.find(o => o.reserve);
+    if (stay) box.appendChild(btn('Rester en réserve', () => send({ type: 'option', index: stay.index }), 'warn', 'S'));
+    const spots = p.options.filter(o => o.x !== undefined);
+    if (spots.length > 1) box.appendChild(btn('Autre emplacement proposé', () => {
+      local.spot = ((local.spot || 0) + 1) % spots.length; const o = spots[local.spot];
+      const al = u.models.filter(m => m.alive); const mx = al.reduce((a, m) => a + local.pos[m.id][0], 0) / al.length, my = al.reduce((a, m) => a + local.pos[m.id][1], 0) / al.length;
+      al.forEach(m => { const q = local.pos[m.id]; local.pos[m.id] = [q[0] - mx + o.x, q[1] - my + o.y, ...q.slice(2)]; }); render(); scheduleCheck();
+    }));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+    placementTools(box, u);
     updateMoveExtra();
   } else if (p.kind === 'move') {
     $('dtitle').textContent = `Mouvement : ${uname} — M ${u.move}"`;
@@ -548,8 +612,9 @@ function updateMoveExtra() {
     }
   }
   const c = local.check;
-  let html = lines.length ? lines.map(l => l.includes('trop loin') ? `<span class="bad">${l}</span>` : l).join('<br>') : (pl.kind === 'deploy' ? '' : 'Aucune figurine déplacée.');
+  let html = lines.length ? lines.map(l => l.includes('trop loin') ? `<span class="bad">${l}</span>` : l).join('<br>') : (['deploy', 'ingress', 'manual'].includes(pl.kind) ? '' : 'Aucune figurine déplacée.');
   if (c && !c.pending) html = (c.ok ? '<span class="good">✓ placement légal</span>' : `<span class="bad">✗ ${esc(c.error)}</span>`) + (html ? '<br>' + html : '');
+  if (pl.kind === 'manual') { const el = $('m_check'); if (el) el.innerHTML = c && !c.pending ? html : 'Glisse les figurines sur le plateau.'; return; }
   $('extra').innerHTML = html;
 }
 
@@ -557,7 +622,8 @@ function updateMoveExtra() {
 function currentPayload() {
   const pl = place(); if (!pl) return null;
   const u = unitById(pl.uid);
-  if (pl.kind === 'deploy') return { type: 'deploy_models', unit_id: u.id, positions: local.pos };
+  if (pl.kind === 'deploy' || pl.kind === 'ingress') return { type: 'deploy_models', unit_id: u.id, positions: local.pos };
+  if (pl.kind === 'manual') return manualPayload();
   if (pl.kind === 'disembark') return { type: 'disembark_models', unit_id: u.id, positions: local.pos };
   if (pl.kind === 'charge_move') return { type: 'model_move', unit_id: u.id, kind: 'charge', positions: local.pos };
   if (pl.kind === 'scout') return { type: 'model_move', unit_id: u.id, kind: 'scout', positions: local.pos };
@@ -568,7 +634,7 @@ function scheduleCheck() {
   clearTimeout(local.checkTimer);
   local.checkTimer = setTimeout(async () => {
     const pl = place(); const payload = currentPayload(); if (!pl || !payload) return;
-    const moved = Object.entries(local.orig).some(([k, o]) => moveDist(null, o, local.pos[k]) > 0.02) || pl.kind === 'deploy' || pl.kind === 'disembark';
+    const moved = Object.entries(local.orig).some(([k, o]) => moveDist(null, o, local.pos[k]) > 0.02) || ['deploy', 'disembark', 'ingress', 'manual'].includes(pl.kind);
     if (!moved) { local.check = null; updateMoveExtra(); render(); return; }
     const seq = ++local.checkSeq;
     try {
@@ -588,11 +654,12 @@ function lineClass(line) {
   if (line.startsWith('Score') || line.startsWith('Fin de bataille') || line.startsWith('RÉSULTAT')) return 'score';
   if (line.startsWith('Tir') || line.startsWith('Combat') || line.startsWith('Charge')) return 'combat';
   if (line.startsWith('Stratagème')) return 'strat';
+  if (line.startsWith('Effet manuel') || line.startsWith('Réserves')) return 'manual';
   if (line.startsWith('      ')) return 'detail';
   if (line.startsWith('ERREUR')) return 'err';
   return '';
 }
-const FEED_RE = /^(Tir|Combat|Charge|Score|Battle-shock|Deadly Demise|Fin de bataille|RÉSULTAT|Hazardous|Desperate|Transport|Stratagème)|Advance de|jets? de danger|lance 2D6|D6 = /;
+const FEED_RE = /^(Tir|Combat|Charge|Score|Battle-shock|Deadly Demise|Fin de bataille|RÉSULTAT|Hazardous|Desperate|Transport|Stratagème|Effet manuel|Réserves)|arrive des réserves|Advance de|jets? de danger|lance 2D6|D6 = /;
 function appendLog(lines, since, live) {
   if (since === 0 && logLen > 0) { $('log').innerHTML = ''; }
   const box = $('log');
@@ -601,7 +668,7 @@ function appendLog(lines, since, live) {
     d.className = lineClass(line);
     d.textContent = line;
     box.appendChild(d);
-    if (live && prefs.get('anim', true) && FEED_RE.test(line)) pushFeed(line);
+    if (live && prefs.get('anim', true) && FEED_RE.test(line) && !/aucune unité ne peut/.test(line)) pushFeed(line);
   });
   logLen = since + lines.length;
   box.scrollTop = box.scrollHeight;
@@ -827,6 +894,22 @@ function renderUnits(rr) {
       ctx.strokeStyle = isTarget ? 'rgba(40,160,60,0.6)' : 'rgba(200,60,60,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
       shapePath(m, m.x, m.y, m.a || 0, isTarget ? 1 : rr.engagement_range); ctx.stroke(); ctx.setLineDash([]);
     }));
+    if (pl.kind === 'ingress') {
+      const [bw, bh] = layout.board, E = 6;
+      ctx.fillStyle = 'rgba(40,160,60,0.13)';
+      if (p.phase !== 'deep_strike') {
+        ctx.fillRect(X(0), Y(0), bw * K, E * K); ctx.fillRect(X(0), Y(bh - E), bw * K, E * K);
+        ctx.fillRect(X(0), Y(E), E * K, (bh - 2 * E) * K); ctx.fillRect(X(bw - E), Y(E), E * K, (bh - 2 * E) * K);
+        if (S.battle_round < 3) {
+          const z = layout.deployment_zones[S.human_side === 'attacker' ? 'defender' : 'attacker'];
+          ctx.strokeStyle = 'rgba(200,30,30,0.8)'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+          ctx.beginPath(); z.forEach((v, i) => i ? ctx.lineTo(X(v[0]), Y(v[1])) : ctx.moveTo(X(v[0]), Y(v[1]))); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+        }
+      } else ctx.fillRect(X(0), Y(0), bw * K, bh * K);
+      S.units.filter(u => u.side !== S.human_side && !u.destroyed && u.deployed).forEach(u => u.models.filter(m => m.alive).forEach(m => {
+        ctx.fillStyle = 'rgba(200,40,40,0.10)'; shapePath(m, m.x, m.y, m.a || 0, 8); ctx.fill();
+      }));
+    }
     if (pl.kind === 'disembark' && p.target_id) {
       unitById(p.target_id).models.forEach(m => { ctx.strokeStyle = 'rgba(40,160,60,0.7)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); shapePath(m, m.x, m.y, m.a || 0, p.max_distance || 3); ctx.stroke(); ctx.setLineDash([]); });
     }
@@ -849,10 +932,10 @@ function renderUnits(rr) {
   const overhang = new Set();
   if (p && p.kind === 'shoot' && !R) p.options.forEach(o => (o.outside_terrain || []).forEach(id => overhang.add(id)));
   const bad = local.check && !local.check.ok ? local.check.model_id : null;
-  const visible = u => R ? u.models.some(m => R.pos[m.id] && R.pos[m.id][3] && R.pos[m.id][5]) : (!u.destroyed && (u.deployed || u.id === active));
+  const visible = u => R ? u.models.some(m => R.pos[m.id] && R.pos[m.id][3] && R.pos[m.id][5]) : ((!u.destroyed && (u.deployed || u.id === active)) || (pl && pl.manual === 'revive' && u.id === active));
   const order = S.units.filter(visible).sort((a, b) => (a.id === active) - (b.id === active) || (a.side === S.human_side) - (b.side === S.human_side));
   order.forEach(u => {
-    const alive = u.models.filter(m => R ? (R.pos[m.id] && R.pos[m.id][3] && R.pos[m.id][5]) : m.alive);
+    const alive = u.models.filter(m => R ? (R.pos[m.id] && R.pos[m.id][3] && R.pos[m.id][5]) : (m.alive || (pl && pl.manual === 'revive' && u.id === active && local.pos[m.id])));
     alive.forEach(m => {
       const [x, y, a] = livePose(u, m);
       const wounds = R && R.pos[m.id] ? R.pos[m.id][4] : m.wounds;
@@ -920,7 +1003,7 @@ function modelAt(px, py, onlyUnit) {
   const [bx, by] = toBoard(px, py);
   const pl = place();
   let best = null, bestD = 1e9;
-  S.units.filter(u => !u.destroyed && (onlyUnit ? u.id === onlyUnit : (u.deployed || (pl && pl.uid === u.id)))).forEach(u => u.models.filter(m => m.alive).forEach(m => {
+  S.units.filter(u => (!u.destroyed || (pl && pl.uid === u.id)) && (onlyUnit ? u.id === onlyUnit : (u.deployed || (pl && pl.uid === u.id)))).forEach(u => u.models.filter(m => m.alive || (pl && pl.uid === u.id && local.pos[m.id])).forEach(m => {
     const [x, y, a] = livePose(u, m); const d = Math.hypot(x - bx, y - by);
     if (inShape(m, x, y, a, bx, by, 0.15 * Math.max(1, 12 / K)) && d < bestD) { best = { u, m }; bestD = d; }
   }));
@@ -1113,7 +1196,8 @@ async function showDetails(uid) {
 }
 function briefHtml(u) {
   const f = u.flags; const flags = [f.engaged && 'engagée', f.advanced && 'a avancé', f.fell_back && 'repliée', f.charged && 'a chargé', f.battle_shocked && 'battle-shock', f.has_shot && 'a tiré', f.has_fought && 'a combattu', f.hidden && 'cachée'].filter(Boolean).join(', ');
-  return `<b>${esc(u.name)} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}${flags ? ' — ' + flags : ''}${u.embarked_in ? ' — à bord de ' + u.embarked_in : ''}`;
+  return `<b>${esc(u.name)} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}${flags ? ' — ' + flags : ''}${u.embarked_in ? ' — à bord de ' + u.embarked_in : ''}${u.in_reserve ? ' — en réserve' : ''}`
+    + ((u.effects || []).length ? `<br><span style="color:#c6b5ff">effets : ${u.effects.map(esc).join(' · ')}</span>` : '');
 }
 function renderUnitInfo() {
   const box = $('unitinfo');
@@ -1137,6 +1221,123 @@ function detailsHtml(d, u) {
     <table><tr><th>Arme</th><th>Portée</th><th>A</th><th>CT/CC</th><th>S</th><th>PA</th><th>D</th><th>Mots-clés</th></tr>${weap}</table>
     ${abil ? `<div style="margin-top:4px">${abil}</div>` : ''}<div style="margin-top:4px;font-size:11.5px">${esc(d.keywords.join(', '))}</div>`;
 }
+
+// ------------------------------------------------------------ stratagèmes et effets manuels (les « latitudes » des règles)
+view.rulesOpen = false; view.rulesTab = 'strat'; view.useForm = null; view.manual = null;
+const STATUS_FR = { auto: 'appliqué automatiquement', partial: 'en partie automatique', manual: 'à appliquer à la main', window: 'proposé au bon moment' };
+const UNTIL_FR = { phase: 'fin de la phase', turn: 'fin du tour', round: 'fin du round', battle: 'toute la bataille', owner_next_turn: 'mon prochain tour' };
+function unitOptions(filter, selected, withNone) {
+  const mine = S.units.filter(u => u.side === S.human_side && filter(u)), theirs = S.units.filter(u => u.side !== S.human_side && filter(u));
+  const opt = u => `<option value="${u.id}" ${u.id === selected ? 'selected' : ''}>${esc(u.name)} [${u.id}]${u.in_reserve ? ' (réserve)' : ''}${u.destroyed ? ' (détruite)' : ''}</option>`;
+  return (withNone ? `<option value="">—</option>` : '') + (mine.length ? `<optgroup label="Mes unités">${mine.map(opt).join('')}</optgroup>` : '')
+    + (theirs.length ? `<optgroup label="Unités adverses">${theirs.map(opt).join('')}</optgroup>` : '');
+}
+function rulesBusy() { const a = document.activeElement; return a && $('rules').contains(a) && ['INPUT', 'SELECT', 'TEXTAREA'].includes(a.tagName); }
+function renderRules(force) {
+  if (!view.rulesOpen || !S || !S.human_side) return;
+  if (!force && rulesBusy()) return;  // ne pas effacer une saisie en cours
+  $('tab_strat').classList.toggle('on', view.rulesTab === 'strat'); $('tab_manual').classList.toggle('on', view.rulesTab === 'manual');
+  if (view.rulesTab === 'strat') renderStratTab(); else renderManualTab();
+}
+async function sendFree(payload, errId) {
+  const res = await postJSON(withT(API + '/free'), payload);
+  if (!res.ok) { const e = $(errId); if (e) e.textContent = res.error || 'refusé'; return false; }
+  markSeen(); return true;
+}
+function renderStratTab() {
+  const box = $('rules_body'), book = S.stratagem_book || [];
+  if (!book.length) { box.innerHTML = '<div class="hint">Pas de stratagèmes dans cette partie (créée avant leur arrivée).</div>'; return; }
+  const f = view.useForm;
+  const sorted = book.slice().sort((a, b) => (b.usable - a.usable) || (a.detachment === 'base') - (b.detachment === 'base') || a.name.localeCompare(b.name));
+  box.innerHTML = `<div class="hint">Tu as <b>${S.cp[S.human_side]}</b> CP. Les stratagèmes « proposés au bon moment » s’ouvrent seuls pendant la partie ; les autres se jouent ici, au moment indiqué (tour et phase vérifiés). Un effet non traduit est rappelé dans le journal : applique-le avec « Effet manuel ».</div><div id="st_err" class="why"></div>`
+    + sorted.map(st => `<div class="st"><b>${esc(st.name)}</b> <span class="pill">${st.cp} CP</span><span class="badge ${st.status}">${STATUS_FR[st.status] || st.status}</span>
+      <div class="meta">${esc(st.detachment)} · ${esc(st.turn)} · ${esc(st.phase)}${st.summary ? ' — <span style="color:#cfd8a8">' + esc(st.summary) + '</span>' : ''}</div>
+      <details><summary>texte</summary><b>QUAND</b> ${esc(st.when)}<br><b>CIBLE</b> ${esc(st.target)}<br><b>EFFET</b> ${esc(st.effect)}${st.restrictions ? '<br><b>RESTRICTIONS</b> ' + esc(st.restrictions) : ''}</details>
+      ${st.usable ? `<button data-use="${st.id}">Utiliser…</button>` : `<span class="why">${esc(st.why || '')}</span>`}
+      ${f && f.sid === st.id ? useFormHtml(st) : ''}</div>`).join('');
+  box.querySelectorAll('button[data-use]').forEach(b => b.onclick = () => {
+    const own = view.detailsUnit && unitById(view.detailsUnit) && unitById(view.detailsUnit).side === S.human_side ? view.detailsUnit : (S.units.find(u => u.side === S.human_side && !u.destroyed) || {}).id;
+    view.useForm = { sid: b.dataset.use, unit: own, target: '', choice: '', note: '' }; renderRules(true);
+  });
+  if (f) {
+    const bind = (id, key) => { const el = $(id); if (el) el.onchange = el.oninput = () => { f[key] = el.value; }; };
+    bind('u_unit', 'unit'); bind('u_target', 'target'); bind('u_choice', 'choice'); bind('u_note', 'note');
+    const ok = $('u_ok'); if (ok) ok.onclick = async () => {
+      if (await sendFree({ type: 'use_stratagem', stratagem_id: f.sid, unit_id: f.unit || null, target_id: f.target || null, choice: f.choice || null, note: f.note }, 'st_err')) { view.useForm = null; }
+    };
+    const no = $('u_no'); if (no) no.onclick = () => { view.useForm = null; renderRules(true); };
+  }
+}
+function useFormHtml(st) {
+  const f = view.useForm;
+  return `<div class="form"><label class="f">Unité ciblée <select id="u_unit">${unitOptions(u => !u.destroyed, f.unit, true)}</select></label>
+    <label class="f">Unité ennemie${st.needs_enemy ? '' : ' (facultatif)'} <select id="u_target">${unitOptions(u => !u.destroyed && u.side !== S.human_side, f.target, true)}</select></label>
+    ${st.choices.length ? `<label class="f">Option <select id="u_choice"><option value="">—</option>${st.choices.map(c => `<option ${c === f.choice ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>` : ''}
+    <label class="f">Précision <input id="u_note" size="28" value="${esc(f.note)}" placeholder="facultatif"></label>
+    <button id="u_ok" class="primary">Confirmer (${st.cp} CP)</button> <button id="u_no">Annuler</button></div>`;
+}
+const PLACED = new Set(['revive', 'set_up', 'move']);
+function manualDefaults() {
+  const own = view.detailsUnit || ((S.units.find(u => u.side === S.human_side && !u.destroyed) || {}).id);
+  return { kind: 'note', uid: own, rule: '', value: '', models: new Set(), effect: 'hit_mod', effect_value: '1', until: 'phase', scope: 'all', vs: '', note: '', placing: false, stamp: 0 };
+}
+function renderManualTab() {
+  const box = $('rules_body');
+  const M = view.manual = view.manual || manualDefaults();
+  const u = unitById(M.uid);
+  const K = S.manual_kinds || {};
+  const needsUnit = !['note', 'cp'].includes(M.kind);
+  const valLabel = { cp: 'CP (+ ou -)', heal: 'PV rendus', mortal: 'blessures mortelles', revive: 'PV par figurine (vide = tous)' }[M.kind];
+  let models = '';
+  if (u && ['heal', 'destroy', 'revive'].includes(M.kind)) {
+    const list = u.models.filter(m => M.kind === 'revive' ? !m.alive : m.alive);
+    models = list.length ? `<div class="models">${list.map(m => `<label><input type="checkbox" data-mid="${m.id}" ${M.models.has(m.id) ? 'checked' : ''}> ${m.id} (${m.wounds}/${m.max_wounds} PV)</label>`).join('')}</div>` : '<div class="why">aucune figurine concernée</div>';
+  }
+  const ek = S.effect_kinds || {};
+  box.innerHTML = `<div class="hint">Pour tout ce que tes règles permettent et que le moteur ne joue pas encore seul (réserves, soins, figurines qui reviennent, BM, bonus…). L’adversaire le voit dans le journal et peut l’annuler.</div>
+    <label class="f">Règle invoquée <input id="m_rule" list="m_rules" size="26" value="${esc(M.rule)}" placeholder="nom de la capacité, du stratagème…"><datalist id="m_rules">${(S.rules_menu || []).map(r => `<option value="${esc(r)}">`).join('')}</datalist></label>
+    <label class="f">Effet <select id="m_kind">${Object.entries(K).map(([k, v]) => `<option value="${k}" ${k === M.kind ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+    ${needsUnit ? `<label class="f">Unité <select id="m_unit">${unitOptions(x => M.kind === 'revive' ? x.models.some(m => !m.alive) : !x.destroyed, M.uid, false)}</select></label>` : ''}
+    ${valLabel ? `<label class="f">${valLabel} <input id="m_value" type="number" style="width:70px" value="${esc(M.value)}"></label>` : ''}
+    ${models}
+    ${M.kind === 'battleshock' ? `<label class="f">Battle-shocked <select id="m_bs"><option value="1" ${M.value !== '0' ? 'selected' : ''}>oui</option><option value="0" ${M.value === '0' ? 'selected' : ''}>non</option></select></label>` : ''}
+    ${M.kind === 'effect' ? `<label class="f">Bonus <select id="m_effect">${Object.entries(ek).map(([k, v]) => `<option value="${k}" ${k === M.effect ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+       valeur <input id="m_evalue" size="12" value="${esc(M.effect_value)}" title="nombre (+1, -1, 5 pour 5+), « ones » / « fails » pour une relance, mot-clé d’arme (lethal hits…)"></label>
+       <label class="f">Durée <select id="m_until">${Object.entries(UNTIL_FR).map(([k, v]) => `<option value="${k}" ${k === M.until ? 'selected' : ''}>${v}</option>`).join('')}</select>
+       Portée <select id="m_scope">${[['all', 'tir et mêlée'], ['ranged', 'tir'], ['melee', 'mêlée']].map(([k, v]) => `<option value="${k}" ${k === M.scope ? 'selected' : ''}>${v}</option>`).join('')}</select>
+       contre <select id="m_vs">${unitOptions(x => !x.destroyed && x.side !== (u ? u.side : S.human_side), M.vs, true)}</select></label>` : ''}
+    ${PLACED.has(M.kind) ? `<div class="form">${M.placing ? '<b>Placement :</b> glisse les figurines sur le plateau (Maj ou « toute l’unité » pour tout déplacer). <div id="m_check"></div><button id="m_stop">Arrêter le placement</button>' : `<button id="m_place">Placer sur le plateau</button> ${M.kind === 'revive' ? 'coche d’abord les figurines à ramener' : ''}`}</div>` : ''}
+    <label class="f">Précision <input id="m_note" size="30" value="${esc(M.note)}" placeholder="facultatif"></label>
+    <button id="m_ok" class="primary">Appliquer</button> <span id="m_err" class="why"></span>`;
+  const bind = (id, key) => { const el = $(id); if (el) el.oninput = el.onchange = () => { M[key] = el.value; }; };
+  bind('m_rule', 'rule'); bind('m_value', 'value'); bind('m_note', 'note'); bind('m_evalue', 'effect_value'); bind('m_until', 'until'); bind('m_scope', 'scope'); bind('m_vs', 'vs'); bind('m_effect', 'effect');
+  const bs = $('m_bs'); if (bs) { M.value = bs.value; bs.onchange = () => { M.value = bs.value; }; }
+  $('m_kind').onchange = e => { stopManualPlacing(); M.kind = e.target.value; M.models = new Set(); M.value = ''; renderRules(true); };
+  const mu = $('m_unit'); if (mu) { if (!M.uid || !unitById(M.uid)) M.uid = mu.value; mu.onchange = e => { stopManualPlacing(); M.uid = e.target.value; M.models = new Set(); renderRules(true); }; }
+  box.querySelectorAll('input[data-mid]').forEach(c => c.onchange = () => { if (c.checked) M.models.add(c.dataset.mid); else M.models.delete(c.dataset.mid); });
+  const mp = $('m_place'); if (mp) mp.onclick = () => {
+    if (M.kind === 'revive' && !M.models.size) { $('m_err').textContent = 'coche les figurines à ramener'; return; }
+    M.placing = true; M.stamp += 1; local.decisionKey = null; onNewState(); render(); renderRules(true); updateMoveExtra();
+  };
+  const ms = $('m_stop'); if (ms) ms.onclick = () => { stopManualPlacing(); renderRules(true); };
+  $('m_ok').onclick = async () => {
+    if (PLACED.has(M.kind) && !M.placing) { $('m_err').textContent = 'place d’abord les figurines sur le plateau'; return; }
+    if (await sendFree(manualPayload(), 'm_err')) { const keep = { kind: M.kind, uid: M.uid, rule: '' }; stopManualPlacing(); view.manual = Object.assign(manualDefaults(), keep); renderRules(true); }
+  };
+}
+function stopManualPlacing() { if (view.manual && view.manual.placing) { view.manual.placing = false; local.decisionKey = null; onNewState(); render(); } }
+function manualPayload() {
+  const M = view.manual || manualDefaults();
+  const positions = M.placing ? local.pos : {};
+  const models = M.kind === 'revive' ? Array.from(M.models) : Array.from(M.models);
+  return { type: 'manual', kind: M.kind, unit_id: ['note', 'cp'].includes(M.kind) ? null : M.uid, model_ids: models, value: M.value === '' ? null : M.value,
+           positions, effect: M.kind === 'effect' ? M.effect : null, effect_value: M.kind === 'effect' ? M.effect_value : null,
+           until: M.until, scope: M.scope, vs: M.vs || null, rule: M.rule, note: M.note };
+}
+$('rulesbtn').addEventListener('click', () => { view.rulesOpen = !view.rulesOpen; $('rules').classList.toggle('open', view.rulesOpen); if (!view.rulesOpen) stopManualPlacing(); renderRules(true); });
+$('rulesclose').addEventListener('click', () => { view.rulesOpen = false; $('rules').classList.remove('open'); stopManualPlacing(); });
+$('tab_strat').addEventListener('click', () => { view.rulesTab = 'strat'; stopManualPlacing(); renderRules(true); });
+$('tab_manual').addEventListener('click', () => { view.rulesTab = 'manual'; renderRules(true); });
 
 // ------------------------------------------------------------ réglages
 $('setbtn').addEventListener('click', () => $('settings').classList.toggle('open'));
@@ -1162,7 +1363,7 @@ function gameGone(st) {
   $('dhint').textContent = st.error || '';
   $('dbtns').innerHTML = ''; $('extra').innerHTML = '';
   $('dbtns').appendChild(btn('Retour à l’accueil', () => { location.href = '/'; }, 'primary'));
-  ['undobtn', 'histbtn', 'delbtn', 'setbtn'].forEach(id => { $(id).style.display = 'none'; });
+  ['undobtn', 'histbtn', 'delbtn', 'setbtn', 'rulesbtn'].forEach(id => { $(id).style.display = 'none'; });
   try {  // on l'enlève de « Mes parties »
     const all = JSON.parse(localStorage.getItem('fortyk.mygames') || '[]');
     localStorage.setItem('fortyk.mygames', JSON.stringify(all.filter(g => g.id !== GID)));
@@ -1190,7 +1391,7 @@ async function renderWaiting(st) {
   $('title').innerHTML = `${esc((st.game && st.game.title) || '40kPlayer')} <span class="pill">en attente</span>`;
   $('nameA').textContent = P.attacker && P.attacker.name ? `${P.attacker.name} — attaquant` : 'Attaquant (en attente)';
   $('nameD').textContent = P.defender && P.defender.name ? `${P.defender.name} — défenseur` : 'Défenseur (en attente)';
-  ['undobtn', 'histbtn', 'setbtn'].forEach(id => { $(id).style.display = 'none'; });
+  ['undobtn', 'histbtn', 'setbtn', 'rulesbtn'].forEach(id => { $(id).style.display = 'none'; });
   $('delbtn').style.display = st.join ? '' : 'none';  // le créateur peut annuler sa partie en attente
   const box = $('dbtns'); box.innerHTML = ''; $('extra').innerHTML = ''; $('dobs').textContent = '';
   if (st.join) {

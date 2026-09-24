@@ -69,6 +69,7 @@ class AttackProfile:
     critical_wound_on: int = 6  #: Anti-X N+ contre une cible X : N
     min_unmodified_hit: int = 0  #: Indirect Fire (10.07) : un jet non modifié inférieur rate (6 ou 4)
     precision: bool = False  #: [PRECISION] (24.28) : l'attaquant peut choisir un groupe PERSONNAGE visible
+    critical_hit_on: int = 6  #: touche critique sur N+ (effets « critical hit on 5+ »)
     label: str = ""  #: pour les journaux (« Bolt rifle ×5 »)
 
     def __post_init__(self):
@@ -192,7 +193,7 @@ def resolve_attacks(
     après les blessures (``saves_attempted`` blessures à sauvegarder, ``devastating`` blessures
     dévastatrices) ; l'appelant fait les sauvegardes groupe d'allocation par groupe (V11 05.03)."""
     out = AttackOutcome()
-    crit = rules.critical_roll
+    crit = min(rules.critical_roll, profile.critical_hit_on)
     hit_needed = hit_roll_needed(profile, rules)
     wound_needed = wound_roll_needed_for(profile, defender, rules)
     crit_wound_on = profile.critical_wound_on
@@ -210,11 +211,11 @@ def resolve_attacks(
             out.hits += 1
             hits_to_wound += 1
             continue
-        roll = _roll_with_reroll(rng, lambda r: r >= hit_needed or r == crit, profile.reroll_hits)
-        if roll == 1 or (roll < hit_needed and roll != crit):
+        roll = _roll_with_reroll(rng, lambda r: r >= hit_needed or r >= crit, profile.reroll_hits)
+        if roll == 1 or (roll < hit_needed and roll < crit):
             continue
         out.hits += 1
-        if roll == crit:
+        if roll >= crit:
             out.critical_hits += 1
             if profile.sustained_hits is not None:
                 extra = profile.sustained_hits.roll(rng)
@@ -275,7 +276,8 @@ def expected_attacks(
     if hit_needed is None:
         p_hit, p_crit_hit = 1.0, 0.0
     else:
-        p_hit, p_crit_hit = _with_reroll(_p_at_least(hit_needed), _p_at_least(rules.critical_roll), profile.reroll_hits)
+        crit = max(2, min(rules.critical_roll, profile.critical_hit_on))
+        p_hit, p_crit_hit = _with_reroll(_p_at_least(min(hit_needed, crit)), _p_at_least(crit), profile.reroll_hits)
     hits = n_attacks * p_hit
     crit_hits = n_attacks * p_crit_hit
     extra_hits = crit_hits * profile.sustained_hits.mean if profile.sustained_hits is not None else 0.0

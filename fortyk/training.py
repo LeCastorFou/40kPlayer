@@ -55,6 +55,11 @@ def iter_replay(engine: Engine, initial: GameState, record: Dict[str, Any]) -> I
     for i, h in enumerate(history):
         if i in reseeds:
             s.rng.seed(reseeds[i])
+        if h.get("decision") == "free":  # action libre (effet manuel, stratagème du panneau), de l'un ou l'autre camp
+            act = action_from_json(h["action"])
+            yield i, s, Decision("free", h["side"], [act]), h
+            engine.apply_free(s, h["side"], act, validate=False)
+            continue
         d = engine.decision(s)
         if d is None or d.side != h["side"]:
             raise ValueError(f"historique désynchronisé à l'action {i} ({h.get('label')})")

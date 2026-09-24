@@ -32,6 +32,10 @@ __all__ = [
     "DisembarkAction",
     "DisembarkModelsAction",
     "StratagemAction",
+    "ReserveAction",
+    "ManualAction",
+    "UseStratagemAction",
+    "FREE_ACTIONS",
     "Action",
     "Decision",
 ]
@@ -215,6 +219,17 @@ class DisembarkModelsAction:
 
 
 @dataclass(frozen=True)
+class ReserveAction:
+    """Réserves stratégiques (20) : au déploiement, placer l'unité en réserve ; pendant un mouvement
+    d'ingress, rester en réserve (l'unité est sélectionnée et reste immobile)."""
+
+    unit_id: str
+
+    def __str__(self) -> str:
+        return f"{self.unit_id} en réserve"
+
+
+@dataclass(frozen=True)
 class StratagemAction:
     """Utiliser un stratagème (15) — ``stratagem`` = clé (voir :mod:`fortyk.engine.stratagems`) ;
     None = ne pas en utiliser (on laisse passer la fenêtre). ``unit_id`` : unité amie ciblée ;
@@ -232,6 +247,56 @@ class StratagemAction:
             return "pas de stratagème"
         bits = [self.stratagem, self.unit_id or "", f"→ {self.target_id}" if self.target_id else "", self.mode or ""]
         return " ".join(b for b in bits if b)
+
+
+@dataclass(frozen=True)
+class ManualAction:
+    """Effet manuel : ce qu'une règle pas encore traduite dans le moteur permet de faire, appliqué par
+    un joueur à n'importe quel moment (journalisé, visible par l'adversaire, annulable).
+
+    ``kind`` : note (règle invoquée, sans effet mécanique), cp (+/- ``value`` CP), heal (``value`` PV à
+    ``model_ids``), revive (figurines détruites ``model_ids`` reposées en ``positions``, ``value`` PV
+    chacune, défaut : tous), mortal (``value`` blessures mortelles), destroy (retirer ``model_ids``),
+    reserve (retour en réserve), set_up (poser l'unité en ``positions``), move (déplacer des figurines
+    en ``positions``), battleshock (``value`` 1 / 0), effect (effet à durée ``effect`` = genre,
+    ``effect_value``, ``until``, ``scope``, ``vs``). ``rule`` : nom de la règle ; ``note`` : précision."""
+
+    kind: str
+    unit_id: Optional[str] = None
+    model_ids: tuple = ()
+    value: Optional[int] = None
+    positions: tuple = ()
+    effect: Optional[str] = None
+    effect_value: Optional[str] = None
+    until: str = "phase"
+    scope: str = "all"
+    vs: Optional[str] = None
+    rule: str = ""
+    note: str = ""
+
+    def __str__(self) -> str:
+        return f"effet manuel {self.kind} {self.unit_id or ''} ({self.rule})".strip()
+
+
+@dataclass(frozen=True)
+class UseStratagemAction:
+    """Utiliser un stratagème du joueur (base ou détachement) depuis le panneau des stratagèmes : les
+    CP et les limites de 15.01 sont vérifiés ; l'effet est appliqué si le moteur sait le traduire,
+    sinon il est à appliquer à la main (effet manuel)."""
+
+    stratagem_id: str
+    unit_id: Optional[str] = None
+    target_id: Optional[str] = None
+    model_id: Optional[str] = None
+    choice: Optional[str] = None  #: option choisie (« Select either the [LETHAL HITS] or [SUSTAINED HITS 1] ability »)
+    note: str = ""
+
+    def __str__(self) -> str:
+        return f"stratagème {self.stratagem_id} {self.unit_id or ''}".strip()
+
+
+#: actions libres : jouables par l'un ou l'autre joueur à tout moment, hors des décisions du moteur
+FREE_ACTIONS = (ManualAction, UseStratagemAction)
 
 
 Action = Union[
@@ -253,6 +318,7 @@ Action = Union[
     DisembarkAction,
     DisembarkModelsAction,
     StratagemAction,
+    ReserveAction,
 ]
 
 
@@ -261,7 +327,7 @@ class Decision:
     """Une question posée à l'agent : quoi (``kind``), pour qui (``side``), avec quelles options.
 
     ``kind`` : select_unit | deploy | oath | move | advance_move | shoot | charge_declare |
-    charge_target | charge_move | fight | observe | embark | disembark | scout | stratagem.
+    charge_target | charge_move | fight | observe | embark | disembark | scout | stratagem | ingress.
     ``max_distance`` : pour move / advance_move / charge_move, distance maximale par figurine
     (M, M + jet d'Advance, ou jet de charge). ``target_id`` : pour charge_move, la première cible ;
     ``targets`` : toutes les cibles de la charge.

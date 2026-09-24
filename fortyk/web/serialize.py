@@ -22,15 +22,19 @@ from ..engine.actions import (
     OathAction,
     SelectUnitAction,
     ShootAction,
+    ManualAction,
+    ReserveAction,
     StratagemAction,
+    UseStratagemAction,
 )
 from ..engine.combat import expected_outcome, is_hidden, models_outside_terrain
+from ..engine.effects import active_effects, describe_effect, effect_total
 from ..engine.stratagems import CORE_STRATAGEMS, WINDOWS, cost_of
 from ..engine.layout import Layout
 from ..engine.movement import MoveKind
 from ..engine.state import GameState, Unit
 
-__all__ = ["layout_to_json", "state_to_json", "decision_to_json", "action_label", "factions_of"]
+__all__ = ["layout_to_json", "state_to_json", "decision_to_json", "action_label", "factions_of", "stratagem_book_json", "rules_menu"]
 
 
 def layout_to_json(layout: Layout, rules) -> Dict[str, Any]:
@@ -59,7 +63,7 @@ def layout_to_json(layout: Layout, rules) -> Dict[str, Any]:
 
 
 def _unit_to_json(state: GameState, u: Unit) -> Dict[str, Any]:
-    deployed = (u.embarked_in is None and all(state.on_board(m.disk) for m in u.alive_models)) if u.alive_models else False
+    deployed = (u.embarked_in is None and not u.in_reserve and all(state.on_board(m.disk) for m in u.alive_models)) if u.alive_models else False
     weapons = sorted({w.name for m in u.alive_models for w in m.weapons})
     return {
         "id": u.id,
@@ -70,8 +74,10 @@ def _unit_to_json(state: GameState, u: Unit) -> Dict[str, Any]:
         "destroyed": u.is_destroyed,
         "deployed": deployed,
         "embarked_in": u.embarked_in,
+        "in_reserve": u.in_reserve,
+        "effects": [describe_effect(e) + (f" ({e.source})" if e.source else "") for e in active_effects(state, u.id)] if state.effects else [],
         "passengers": [p.id for p in state.passengers(u.id)],
-        "move": u.move_in,
+        "move": u.move_in + (effect_total(state, u.id, "move_mod") if state.effects else 0),
         "profile": {
             "T": u.profile.toughness,
             "Sv": u.profile.save,
@@ -194,6 +200,12 @@ def decision_to_json(state: GameState, decision: Optional[Decision]) -> Optional
             item["label"] = "Terminer la phase"
         elif isinstance(opt, StratagemAction):
             _stratagem_item(item, state, opt)
+        elif isinstance(opt, UseStratagemAction):
+            _use_item(item, state, decision.side, opt)
+        elif isinstance(opt, ReserveAction):
+            item["unit_id"] = opt.unit_id
+            item["reserve"] = True
+            item["label"] = "Rester en réserve" if decision.kind == "ingress" else "Placer en réserve stratégique"
         options.append(item)
     ineligible = {uid: {"name": state.unit(uid).datasheet.name, "reason": why} for uid, why in decision.ineligible.items()}
     return {
@@ -244,6 +256,19 @@ def stratagem_text(state: GameState, opt: StratagemAction) -> str:
     return str(opt)
 
 
+def _use_item(item: Dict[str, Any], state: GameState, side: str, opt: UseStratagemAction) -> None:
+    from ..engine.free import stratagem_of
+    from ..rules_compiler import compile_stratagem
+
+    st = stratagem_of(state, side, opt.stratagem_id)
+    comp = compile_stratagem(st) if st is not None else None
+    item.update({"use_stratagem": True, "stratagem_id": opt.stratagem_id, "unit_id": opt.unit_id, "target_id": opt.target_id,
+                 "name": st.name.title() if st else opt.stratagem_id, "cost": st.cp if st else None,
+                 "auto": comp.status if comp else "manual", "effect_text": st.effect if st else "",
+                 "label": f"{st.name.title() if st else opt.stratagem_id} ({st.cp if st else '?'} CP) sur {_uname(state, opt.unit_id)}"
+                          + (f" — {comp.summary()}" if comp and comp.summary() else "") + ("" if comp and comp.auto else " (à compléter à la main)")})
+
+
 def _stratagem_item(item: Dict[str, Any], state: GameState, opt: StratagemAction) -> None:
     if opt.stratagem is None:
         item.update({"stratagem": None, "pass": True, "label": "Ne pas utiliser de stratagème"})
@@ -260,8 +285,21 @@ _MOVE_KIND_FR = {"normal": "déplace", "advance_move": "Advance", "advance": "Ad
                  "scout": "mouvement de scout", "charge": "charge (placement à la main)"}
 
 
-def action_label(state: GameState, decision: Decision, action) -> str:
+def action_label(state: GameState, decision: Optional[Decision], action) -> str:
     """Libellé court d'une action pour l'historique de la partie (calculé avant de l'appliquer)."""
+    if isinstance(action, ManualAction):
+        from ..engine.free import MANUAL_KINDS
+
+        what = MANUAL_KINDS.get(action.kind, action.kind)
+        return f"effet manuel : {what}" + (f" — {_uname(state, action.unit_id)}" if action.unit_id else "") + (f" ({action.rule})" if action.rule else "")
+    if isinstance(action, UseStratagemAction):
+        from ..engine.free import stratagem_of
+
+        sd = state.side_to_move if decision is None else decision.side
+        st = stratagem_of(state, sd, action.stratagem_id) or stratagem_of(state, "attacker", action.stratagem_id) or stratagem_of(state, "defender", action.stratagem_id)
+        return f"stratagème {st.name.title() if st else action.stratagem_id}" + (f" sur {_uname(state, action.unit_id)}" if action.unit_id else "")
+    if isinstance(action, ReserveAction):
+        return f"{_uname(state, action.unit_id)} " + ("reste en réserve" if decision is not None and decision.kind == "ingress" else "en réserve stratégique")
 
     def name(uid):
         if uid is None:
@@ -278,7 +316,7 @@ def action_label(state: GameState, decision: Decision, action) -> str:
     if isinstance(action, EndPhaseAction):
         return "termine la phase"
     if isinstance(action, (DeployAction, DeployModelsAction)):
-        return f"déploie {name(uid)}"
+        return f"{name(uid)} arrive des réserves" if decision is not None and decision.kind == "ingress" else f"déploie {name(uid)}"
     if isinstance(action, EmbarkAction):
         return f"{name(uid)} embarque dans {name(action.transport_id)}" if action.transport_id else f"{name(uid)} n'embarque pas"
     if isinstance(action, (DisembarkAction, DisembarkModelsAction)):
@@ -358,3 +396,46 @@ def state_to_json(state: GameState, decision: Optional[Decision], human_side: Op
     if extra:
         data.update(extra)
     return data
+
+
+def stratagem_book_json(state: GameState, side: str) -> List[Dict[str, Any]]:
+    """Stratagèmes du camp pour le panneau : texte, traduction automatique, et s'ils sont jouables
+    maintenant (CP, limites de 15.01, tour et phase)."""
+    from ..engine.free import stratagem_timing_error
+    from ..engine.stratagems import CORE_BY_NAME, key_of, unavailable
+    from ..rules_compiler import compile_stratagem
+
+    out = []
+    for st in state.stratagem_book.get(side, []):
+        comp = compile_stratagem(st)
+        why = stratagem_timing_error(state, side, st) or unavailable(state, side, key_of(st.name), cost=st.cp or 0)
+        core_key = CORE_BY_NAME.get(" ".join(st.name.upper().split()))
+        out.append({
+            "id": st.id, "name": st.name.title(), "cp": st.cp, "detachment": st.detachment or "base", "turn": st.turn, "phase": st.phase,
+            "when": st.when, "target": st.target, "effect": st.effect, "restrictions": st.restrictions,
+            "status": "window" if core_key else comp.status, "summary": comp.summary(), "unparsed": comp.unparsed,
+            "needs_enemy": comp.needs_enemy, "choices": list(comp.choices), "moment": comp.timing.moment,
+            "usable": why is None, "why": why,
+        })
+    return out
+
+
+def rules_menu(state: GameState, side: str) -> List[str]:
+    """Règles que le joueur peut invoquer dans un effet manuel : règles de détachement, améliorations,
+    capacités des fiches de son armée."""
+    names: List[str] = []
+    al = (state.army_lists or {}).get(side)
+    if al is not None:
+        names += [r.name for r in al.active_rules]
+    for u in state.units.values():
+        if u.side != side:
+            continue
+        names += list(u.enhancements)
+        for ds in (u.datasheet, *u.leaders):
+            names += [a.name for a in ds.abilities]
+    seen, out = set(), []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out

@@ -21,7 +21,8 @@ __all__ = ["action_to_json", "action_from_json", "history_to_json", "history_fro
 _ACTION_TYPES = {cls.__name__: cls for cls in (
     A.DeployAction, A.DeployModelsAction, A.SelectUnitAction, A.EndPhaseAction, A.ContinueAction, A.OathAction,
     A.MoveAction, A.ModelMoveAction, A.DeclareAdvanceAction, A.ShootAction, A.ChargeAction, A.DeclareChargeAction,
-    A.AutoChargeMoveAction, A.FightAction, A.EmbarkAction, A.DisembarkAction, A.DisembarkModelsAction, A.StratagemAction,
+    A.AutoChargeMoveAction, A.FightAction, A.EmbarkAction, A.DisembarkAction, A.DisembarkModelsAction, A.StratagemAction, A.ReserveAction, A.ManualAction,
+    A.UseStratagemAction,
 )}
 
 

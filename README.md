@@ -210,6 +210,34 @@ tir), Crushing Impact, Fire Overwatch (tir d'opportunité : 6 non modifié), Smo
 (Leap to Defend, ou Into the Fray pour +1 CP) et Counteroffensive. Limites de 15.01 : même stratagème une fois
 par phase, une unité ciblée par un seul stratagème par phase, jamais une unité battle-shocked.
 
+**Latitudes des règles** (réserves, soins, figurines qui reviennent, bonus de détachement…) :
+
+- **Réserves stratégiques** (20) : au déploiement, « Placer en réserve stratégique » (50 % du format au plus ;
+  AIRCRAFT toujours). À partir du round 2, l'unité est proposée dans la phase de mouvement : on la glisse
+  (bande de 6" le long des bords en vert, 8" autour des ennemis en rouge, zone adverse interdite avant le
+  round 3) ou elle reste en réserve ; **Deep Strike** : n'importe où à plus de 8" de l'ennemi. Les réserves
+  jamais arrivées sont détruites à la fin du round 3 (sauf celles remises en réserve pendant la bataille).
+  Rapid Ingress (15.07) et Infiltrators (24.20) sont joués ; les AIRCRAFT retournent en réserve à la fin du tour
+  adverse.
+- **Panneau « Stratagèmes / règles »** : tous les stratagèmes de ta liste (base et détachements), avec leur
+  texte, leur coût et s'ils sont jouables maintenant (CP, tour et phase, limites de 15.01, cible). Le moteur
+  traduit lui-même le texte Wahapedia quand il le comprend (`fortyk/rules_compiler.py` : +1 touche,
+  relances, PA, mots-clés d'arme, Feel No Pain, invulnérable, couvert, Stealth, Fights First, Advance et
+  charge, retour en réserve, blessures mortelles…) et l'applique ; sinon il rappelle dans le journal ce qui
+  reste à faire. Les stratagèmes de détachement sont aussi **proposés au bon moment** : juste après que
+  l'ennemi a choisi ses cibles, quand ton unité est choisie pour tirer ou combattre, au début et à la fin
+  des phases.
+- **Effet manuel** (onglet du panneau) : pour tout ce qui n'est pas encore traduit, n'importe quel joueur,
+  à tout moment — règle invoquée, CP, soigner des PV, **ramener des figurines** (placées au glisser sur le
+  plateau, vérifiées en direct), blessures mortelles, retirer des figurines, retour en réserve, poser ou
+  déplacer une unité, battle-shock, ou un **effet à durée** (+1 touche, relance, FNP, invulnérable,
+  mot-clé d'arme, +2" de mouvement… jusqu'à la fin de la phase, du tour, du round). C'est journalisé,
+  l'adversaire le voit et peut l'annuler ; les données d'entraînement le gardent.
+
+Couverture de la traduction automatique, par faction : `python3 scripts/rules_coverage.py` (vague 1 :
+40 % des 1 324 stratagèmes de détachement entièrement automatiques, 15 % en partie, le reste en effet
+manuel ; `--unparsed 40` liste les phrases les plus fréquentes qui restent à traduire).
+
 Options : `--host 0.0.0.0` (réseau local), `--port`, `--data-dir`,
 `--vs-bot --side defender --attacker-list <nom>` (partie immédiate contre le bot). N'importe qui ayant
 l'adresse du service peut créer une partie : c'est le code de partie qui protège l'entrée d'un adversaire.
@@ -377,11 +405,16 @@ ne pas publier).
   La carte ne donne ni murs ni hauteurs : aujourd'hui les M/V franchissent toutes les empreintes. À ajouter
   au Layout A (murs des ruines), ce qui remplacera aussi l'approximation « entièrement dans une ruine =
   masqué par ses murs » du couvert.
-- **Stratagèmes** : les 9 stratagèmes de base jouables le sont ; manquent Rapid Ingress (pas de réserves
-  stratégiques dans le moteur) et Command Re-roll sur les jets de touche, blessure, sauvegarde, dégâts,
-  danger et nombre d'attaques (il faudrait interrompre la résolution des attaques). Tir d'opportunité : les
-  armes [TORRENT] touchent toujours automatiquement (pas de jet de touche) — interprétation à confirmer.
-  Stratagèmes et règles de **détachement** : lus, pas encore joués.
+- **Stratagèmes** : les 10 stratagèmes de base sont joués ; Command Re-roll relance les jets d'Advance et de
+  charge (toujours proposé sous 12 : on peut vouloir une charge plus longue), pas encore les jets de touche,
+  blessure, sauvegarde, dégâts, danger et nombre d'attaques (effet manuel en attendant). Tir d'opportunité :
+  les armes [TORRENT] touchent automatiquement (validé). Stratagèmes de détachement : traduits en partie
+  (voir plus haut), le reste en effet manuel ; capacités de fiches et règles de détachement : effet manuel.
+- **Réserves** : le choix « en réserve » se fait en déployant l'unité, pas dans une étape « Declare Battle
+  Formations » séparée et cachée à l'adversaire.
+- **Révisions du moteur** : une partie enregistrée se rejoue avec les règles de sa révision (1 : d'origine,
+  2 : drapeaux « ce tour » pour les deux camps et stratagèmes de base, 3 : Feel No Pain contre les blessures
+  mortelles, stratagèmes de détachement, relance de charge élargie).
 - **Choix laissés à une heuristique** : ordre des groupes d'allocation hors contraintes (défenseur),
   [PRECISION] toujours utilisé quand un personnage est visible, répartition des attaques de mêlée
   (chaque figurine frappe la cible choisie si elle l'engage). L'IA pourra en faire de vraies décisions.

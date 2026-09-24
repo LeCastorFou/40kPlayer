@@ -30,6 +30,7 @@ from .fastgeo import shape_arrays, translations_legal
 from .geometry import Disk, Point, core_points, disk_gap, disks_overlap, dist, extreme_points, point_in_polygon, within
 from .rules import DEFAULT_RULES, RulesConfig
 from .state import GameState, Model, Unit
+from .effects import effect_total
 
 __all__ = [
     "MoveKind",
@@ -281,7 +282,8 @@ def check_model_positions(
     ``kind`` : ``normal`` / ``advance_move`` / ``fall_back`` (ne pas traverser de socle ennemi, finir
     hors portée d'engagement ; un M/V passe sur l'infanterie en normal / Advance), ``desperate`` (on
     traverse, fin hors portée), ``deploy`` (pas de limite de distance, toute l'empreinte dans la zone
-    ``check_zone``). Toujours : sur la table, pas de chevauchement, cohérence d'unité à l'arrivée ; on
+    ``check_zone``), ``set_up`` (mise en place hors déploiement : ingress, figurines ramenées — les
+    contraintes propres sont vérifiées par l'appelant). Toujours : sur la table, pas de chevauchement, cohérence d'unité à l'arrivée ; on
     traverse les amis ; pivoter ne compte pas dans la distance (:func:`move_distance`).
     """
     rules = state.rules
@@ -310,7 +312,7 @@ def check_model_positions(
         for b in ids[i + 1 :]:
             if disks_overlap(finals[a], finals[b]):
                 return f"{a} et {b} se chevauchent"
-    if kind != "deploy":
+    if kind not in ("deploy", "set_up"):
         normalish = kind in (MoveKind.NORMAL, "advance_move", MoveKind.ADVANCE)
         # 03.01 : on traverse les amis mais pas les socles ennemis ; 17.01 : un M/V passe sur les
         # figurines ennemies non M/V en mouvement normal / Advance ; Desperate Escape : on traverse tout
@@ -367,7 +369,7 @@ def candidate_moves(state: GameState, unit: Unit, distances: Sequence[float] = (
     out: List[FormationMove] = [FormationMove(MoveKind.STATIONARY, label="reste immobile")]
     if unit.is_destroyed:
         return out
-    M = unit.move_in
+    M = unit.move_in + (effect_total(state, unit.id, "move_mod") if state.effects else 0)
     c = unit.centroid
     engaged = state.is_engaged(unit)
 

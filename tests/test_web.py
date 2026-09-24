@@ -232,7 +232,7 @@ class RoomTests(unittest.TestCase):
         from fortyk.web.serialize import action_label, decision_to_json
 
         room, tok = self.new()
-        self.assertEqual((room.record["config"]["rev"], room.record["config"]["stratagems"]), (2, True))
+        self.assertEqual((room.record["config"]["rev"], room.record["config"]["stratagems"]), (3, True))
         self.assertTrue(room.state.stratagems)
         old = dict(room.record["config"])
         del old["rev"], old["stratagems"]  # partie enregistrée avant les stratagèmes : rejouée sans
@@ -258,6 +258,38 @@ class RoomTests(unittest.TestCase):
         self.assertFalse(snap["settings"]["stratagems"])
         self.assertTrue(snap["stratagems"])
         self.assertEqual(snap["stratagems_used"], [])
+
+    def test_free_actions_are_saved_replayed_and_undone(self):
+        room, tok = self.to_movement()
+        n = len(room.record["history"])
+        cp = room.state.cp["attacker"]
+        # l'attaquant agit pendant le mouvement du défenseur (hors de son tour)
+        room.free(tok["attacker"], {"type": "manual", "kind": "cp", "value": 1, "rule": "Test"})
+        m = room.state.unit("EC1").models[0]
+        room.free(tok["defender"], {"type": "manual", "kind": "mortal", "unit_id": "SM1", "value": 2, "rule": "Explosion"})
+        with self.assertRaisesRegex(RoomError, "choisis une unité"):
+            room.free(tok["defender"], {"type": "manual", "kind": "heal", "value": 1})
+        with self.assertRaises(RoomError):
+            room.free(None, {"type": "manual", "kind": "cp", "value": 1})  # spectateur
+        self.assertEqual(room.state.cp["attacker"], cp + 1)
+        hist = room.record["history"][n:]
+        self.assertEqual([(h["decision"], h["side"]) for h in hist], [("free", "attacker"), ("free", "defender")])
+        self.assertIn("effet manuel", hist[1]["label"])
+        snap = room.snapshot(tok["defender"])
+        self.assertEqual(snap["pending"]["side"], "defender")  # la décision en cours n'a pas bougé
+        self.assertIn("manual_kinds", snap)
+        self.assertIsInstance(snap["stratagem_book"], list)
+        # rechargement : les actions libres sont rejouées à l'identique
+        again = Room(self.cat, self.store, self.store.load(room.record["id"]))
+        self.assertEqual(signature(again.state), signature(room.state))
+        # annuler défait la dernière action libre
+        room.undo(tok["attacker"])
+        self.assertEqual(len(room.record["history"]), n + 1)
+        self.assertEqual(sum(q.profile.wounds - q.wounds for q in room.state.unit("SM1").models), 0)
+        # vérification à blanc d'une action libre
+        chk = room.check(tok["defender"], {"type": "manual", "kind": "heal", "unit_id": "EC1", "value": 0})
+        self.assertFalse(chk["ok"])
+        self.assertEqual(m.id, room.state.unit("EC1").models[0].id)
 
     def test_full_game_vs_bot_and_training_export(self):
         from fortyk.training import training_export
