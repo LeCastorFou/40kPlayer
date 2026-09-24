@@ -209,7 +209,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/healthz":
                 return self._json({"ok": True, "storage": self.app.storage_status()})
             if path == "/api/config":
-                return self._json({"join_codes": True})
+                return self._json({"join_codes": True, "stratagems": True, "rev": 2})
             if path == "/api/games":
                 return self._json({"games": self.app.store.summaries()})
             if path == "/api/lists":
