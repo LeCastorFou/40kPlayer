@@ -303,7 +303,9 @@ def deploy_and_wait(api: Dokploy, app_id: str, url: str, minutes: int = 20) -> N
     for _ in range(20):
         try:
             with urllib.request.urlopen(url + "/healthz", timeout=10) as r:
-                notice(f"santé : {url}/healthz -> {r.status} {r.read()[:60].decode(errors='replace')}")
+                notice(f"santé : {url}/healthz -> {r.status} {r.read()[:120].decode(errors='replace')}")
+                with urllib.request.urlopen(url + "/api/config", timeout=10) as r2:
+                    notice(f"config : {r2.read()[:120].decode(errors='replace')}")
                 return
         except Exception as err:  # noqa: BLE001
             last = err

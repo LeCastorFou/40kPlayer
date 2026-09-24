@@ -65,6 +65,16 @@ class App:
         self.rooms = Rooms(cat, self.store)
         self.access_code = access_code if access_code is not None else (os.environ.get("FORTYK_ACCESS_CODE") or None)
 
+    def storage_status(self) -> str:
+        """« ok » si le dossier des parties est inscriptible (volume monté avec les bons droits)."""
+        probe = self.store.directory / ".healthz"
+        try:
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return "ok"
+        except OSError as err:
+            return f"erreur : {err.strerror or err}"
+
     def check_code(self, code: Optional[str]) -> None:
         if self.access_code and not hmac.compare_digest(str(code or ""), self.access_code):
             raise RoomError("code d'accès incorrect")
@@ -149,7 +159,7 @@ class _Handler(BaseHTTPRequestHandler):
             if _PAGE_RE.match(path):
                 return self._file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
             if path == "/healthz":
-                return self._json({"ok": True})
+                return self._json({"ok": True, "storage": self.app.storage_status()})
             if path == "/api/config":
                 return self._json({"access_code_required": bool(self.app.access_code)})
             if path == "/api/games":

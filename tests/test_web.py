@@ -190,7 +190,8 @@ class HttpTests(unittest.TestCase):
     def test_two_player_game_over_http(self):
         base, app = self.serve()
         self.assertIn(b"Nouvelle partie", request(base, "/"))
-        self.assertTrue(request(base, "/healthz")["ok"])
+        health = request(base, "/healthz")
+        self.assertEqual((health["ok"], health["storage"]), (True, "ok"))
         res = request(base, "/api/games", {"title": "Test", "lists": {"attacker": None, "defender": None}, "players": HUMANS})
         self.assertTrue(res["ok"], res)
         gid, la, ld = res["id"], res["links"]["attacker"], res["links"]["defender"]
