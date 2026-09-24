@@ -183,12 +183,32 @@ la même action donne un autre jet (la graine est re-tirée et enregistrée, pou
 Contre le bot, le mode « pas à pas » (coché par défaut) arrête chaque action du bot sur « Continuer »
 (ou Espace), et « Annuler » revient à ta dernière décision (le bot ne rejoue pas aussitôt).
 
-Sur le plateau : tu déplaces tes socles à la souris (une figurine, une sélection encadrée, ou toute l'unité
-avec Maj) ; le moteur valide au clic sur « Valider » et explique tout refus (distance, table, chevauchement,
-socle ennemi traversé, portée d'engagement, cohérence). Advance en deux temps (le D6, puis le placement),
-repli ordonné ou Desperate Escape quand tu es engagé ; tir, charge, combat et serment par bouton ou clic sur
-l'unité ennemie ; R / Maj + R pivote une coque ; Échap annule le glissement en cours. Les unités qui ne
-peuvent pas agir sont listées avec la raison.
+Sur le plateau : en phase de mouvement, **glisse directement une de tes unités** (plus besoin de la choisir
+d'abord) — une figurine, une sélection encadrée, ou toute l'unité (Maj, ou le bouton « toute l'unité » au
+doigt). Pendant le glissement, le serveur vérifie le placement à blanc : le socle fautif passe en rouge avec
+la raison (distance, table, chevauchement, socle ennemi traversé, portée d'engagement, cohérence), « ✓
+placement légal » sinon. Advance en deux temps (le D6, puis le placement déjà glissé), repli ordonné ou
+Desperate Escape quand tu es engagé ; tir, charge, combat et serment par bouton ou clic sur l'unité ennemie,
+avec les **dégâts et pertes attendus** affichés sur chaque cible ; clic sur une unité (ou I en survol) : sa
+**fiche** (profils, armes, capacités). Les unités qui ne peuvent pas agir sont listées avec la raison.
+
+Fluidité (menu « Réglages », par joueur) : **actions automatiques** (combat à une seule option, tir vers la
+seule cible possible, serment à cible unique : joués d'office), **déploiement automatique** des unités
+restantes, **stratagèmes** (fenêtres proposées ou non), pas à pas contre le bot, notifications du navigateur
+et son quand c'est à toi, animations. Raccourcis : Entrée valider, S immobile (ou « non » à un stratagème),
+A Advance, N unité suivante, E fin de phase, R pivoter, I fiche, 1…9 stratagème, Ctrl/Cmd + Z annuler.
+La page se met à jour dès que l'adversaire agit (long-polling) ; ses mouvements sont animés et un fil résume
+tirs, charges et jets. En revenant, un bandeau « **Pendant ton absence** » liste ses actions et peut les
+**rejouer en animation** (aussi depuis l'historique : « Rejouer les 30 dernières »). Sur tablette et
+téléphone : glisser au doigt, pincer pour zoomer, glisser le fond pour se déplacer (boutons + − ⤢ aussi).
+
+**Stratagèmes** (15) : le moteur ouvre une fenêtre au moment exact où un stratagème de base peut servir, et
+seulement s'il est utilisable (assez de CP, pas déjà utilisé dans la phase, une cible éligible et utile) ;
+sinon la partie continue sans rien demander. Joués : Command Re-roll (jets d'Advance et de charge), Epic
+Challenge, Insane Bravery (une fois par bataille), Explosives (proposé parmi les options de la phase de
+tir), Crushing Impact, Fire Overwatch (tir d'opportunité : 6 non modifié), Smokescreen, Heroic Intervention
+(Leap to Defend, ou Into the Fray pour +1 CP) et Counteroffensive. Limites de 15.01 : même stratagème une fois
+par phase, une unité ciblée par un seul stratagème par phase, jamais une unité battle-shocked.
 
 Options : `--host 0.0.0.0` (réseau local), `--port`, `--data-dir`,
 `--vs-bot --side defender --attacker-list <nom>` (partie immédiate contre le bot). N'importe qui ayant
@@ -248,7 +268,7 @@ viendra avec l'interface web.
 - Décors tous franchissables, pas d'étages ni de murs ; ce sont les empreintes qui bloquent la vue.
 - Une unité tire tout sur une seule cible ; une figurine tire ses pistolets ou ses autres armes (le lot le
   plus rentable) ; pour une arme à plusieurs profils, le profil aux dégâts attendus maximaux.
-- Allocation V11 par groupes (voir plus bas) ; CP comptés mais pas de stratagèmes. Placement d'urgence d'un
+- Allocation V11 par groupes (voir plus bas) ; stratagèmes de base joués (service web). Placement d'urgence d'un
   transport détruit : automatique.
 - Rosters : 2 × 5 Intercessors (Oath of Moment, Objective Secured, Hail of Bolts) + 1 Redemptor Dreadnought
   (Deadly Demise D3, Duty Eternal) contre 2 × 5 Infractors (Thrill Seekers, Excessive Assault) + 1 Daemon Prince
@@ -308,7 +328,11 @@ ne pas publier).
   (T1, T3, T9, T3m, T1m) ; une figurine le contrôle dès que son socle touche l'empreinte. Un objectif sans
   décor reste un pion de 40 mm avec portée de 3". Contrôle évalué à la fin de chaque phase et de chaque tour.
 - **Points de commandement** (08.02) : +1 CP à chaque joueur à chaque phase de commandement (affichés à côté
-  des VP ; pas encore de stratagèmes pour les dépenser).
+  des VP), dépensés en stratagèmes de base (15, voir « Service web »). Une unité battle-shocked ne peut pas
+  être ciblée par un stratagème (01.07), y compris par Insane Bravery.
+- **Drapeaux « ce tour »** (Advance, repli, charge, tir…) : remis à zéro pour les deux camps au début de
+  chaque tour — une unité qui a chargé à son tour n'est plus « chargeante » au tour adverse (révision 2 du
+  moteur ; les parties enregistrées avant se rejouent avec l'ancien comportement).
 - **Battle-shock** (08.03) : test pour chaque unité battle-shocked ou à moitié de son effectif ou moins ; l'état
   persiste jusqu'à un test réussi. **[CLOSE-QUARTERS]** = [PISTOL]. **[HEAVY]** : +1 touche si l'unité est
   désengagée, n'a pas été posée ce tour et qu'aucune figurine n'a bougé de plus de 3".
@@ -353,7 +377,11 @@ ne pas publier).
   La carte ne donne ni murs ni hauteurs : aujourd'hui les M/V franchissent toutes les empreintes. À ajouter
   au Layout A (murs des ruines), ce qui remplacera aussi l'approximation « entièrement dans une ruine =
   masqué par ses murs » du couvert.
-- **Stratagèmes et règles de détachement** : lus, pas encore joués (les CP s'accumulent sans être dépensés).
+- **Stratagèmes** : les 9 stratagèmes de base jouables le sont ; manquent Rapid Ingress (pas de réserves
+  stratégiques dans le moteur) et Command Re-roll sur les jets de touche, blessure, sauvegarde, dégâts,
+  danger et nombre d'attaques (il faudrait interrompre la résolution des attaques). Tir d'opportunité : les
+  armes [TORRENT] touchent toujours automatiquement (pas de jet de touche) — interprétation à confirmer.
+  Stratagèmes et règles de **détachement** : lus, pas encore joués.
 - **Choix laissés à une heuristique** : ordre des groupes d'allocation hors contraintes (défenseur),
   [PRECISION] toujours utilisé quand un personnage est visible, répartition des attaques de mêlée
   (chaque figurine frappe la cible choisie si elle l'engage). L'IA pourra en faire de vraies décisions.

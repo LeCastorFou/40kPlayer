@@ -31,6 +31,7 @@ __all__ = [
     "EmbarkAction",
     "DisembarkAction",
     "DisembarkModelsAction",
+    "StratagemAction",
     "Action",
     "Decision",
 ]
@@ -213,6 +214,26 @@ class DisembarkModelsAction:
         return f"{self.unit_id} débarque figurine par figurine"
 
 
+@dataclass(frozen=True)
+class StratagemAction:
+    """Utiliser un stratagème (15) — ``stratagem`` = clé (voir :mod:`fortyk.engine.stratagems`) ;
+    None = ne pas en utiliser (on laisse passer la fenêtre). ``unit_id`` : unité amie ciblée ;
+    ``target_id`` : unité ennemie visée ; ``model_id`` : figurine choisie ; ``mode`` : variante
+    (relance d'Advance ou de charge, Leap to Defend / Into the Fray)."""
+
+    stratagem: Optional[str]
+    unit_id: Optional[str] = None
+    target_id: Optional[str] = None
+    model_id: Optional[str] = None
+    mode: Optional[str] = None
+
+    def __str__(self) -> str:
+        if self.stratagem is None:
+            return "pas de stratagème"
+        bits = [self.stratagem, self.unit_id or "", f"→ {self.target_id}" if self.target_id else "", self.mode or ""]
+        return " ".join(b for b in bits if b)
+
+
 Action = Union[
     DeployAction,
     DeployModelsAction,
@@ -231,6 +252,7 @@ Action = Union[
     EmbarkAction,
     DisembarkAction,
     DisembarkModelsAction,
+    StratagemAction,
 ]
 
 
@@ -239,11 +261,12 @@ class Decision:
     """Une question posée à l'agent : quoi (``kind``), pour qui (``side``), avec quelles options.
 
     ``kind`` : select_unit | deploy | oath | move | advance_move | shoot | charge_declare |
-    charge_target | charge_move | fight | observe | embark | disembark | scout.
+    charge_target | charge_move | fight | observe | embark | disembark | scout | stratagem.
     ``max_distance`` : pour move / advance_move / charge_move, distance maximale par figurine
     (M, M + jet d'Advance, ou jet de charge). ``target_id`` : pour charge_move, la première cible ;
     ``targets`` : toutes les cibles de la charge.
     ``phase`` : pour select_unit, la phase concernée. ``ineligible`` : unités non activables et pourquoi.
+    ``window`` : pour stratagem, la fenêtre de réaction (voir :mod:`fortyk.engine.stratagems`).
     """
 
     kind: str
@@ -256,6 +279,7 @@ class Decision:
     ineligible: Dict[str, str] = field(default_factory=dict)
     target_id: Optional[str] = None
     targets: tuple = ()
+    window: str = ""
 
     def __post_init__(self):
         if not self.options:

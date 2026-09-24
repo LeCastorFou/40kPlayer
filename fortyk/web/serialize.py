@@ -22,8 +22,10 @@ from ..engine.actions import (
     OathAction,
     SelectUnitAction,
     ShootAction,
+    StratagemAction,
 )
-from ..engine.combat import is_hidden, models_outside_terrain
+from ..engine.combat import expected_outcome, is_hidden, models_outside_terrain
+from ..engine.stratagems import CORE_STRATAGEMS, WINDOWS, cost_of
 from ..engine.layout import Layout
 from ..engine.movement import MoveKind
 from ..engine.state import GameState, Unit
@@ -107,6 +109,16 @@ def _unit_to_json(state: GameState, u: Unit) -> Dict[str, Any]:
     }
 
 
+def _expect(item: Dict[str, Any], state: GameState, uid: str, tid: str, kind: str) -> None:
+    """Dégâts et pertes attendus (aide à la décision) ; silencieux si le calcul échoue."""
+    try:
+        dmg, models = expected_outcome(state, state.unit(uid), state.unit(tid), kind)
+    except Exception:  # noqa: BLE001
+        return
+    item["expected_damage"] = round(dmg, 1)
+    item["expected_models"] = round(models, 1)
+
+
 def decision_to_json(state: GameState, decision: Optional[Decision]) -> Optional[Dict[str, Any]]:
     if decision is None:
         return None
@@ -126,6 +138,8 @@ def decision_to_json(state: GameState, decision: Optional[Decision]) -> Optional
                 item["distance"] = round(state.unit(opt.unit_id).min_gap_to(tgt), 1)
                 item["hidden"] = is_hidden(state, tgt)
                 item["outside_terrain"] = models_outside_terrain(state, tgt)
+                if isinstance(opt, ShootAction):
+                    _expect(item, state, opt.unit_id, opt.target_id, "shooting")
         elif isinstance(opt, DeclareChargeAction):
             item["declare_charge"] = True
             item["label"] = "Déclarer la charge (2D6)"
@@ -137,6 +151,7 @@ def decision_to_json(state: GameState, decision: Optional[Decision]) -> Optional
         elif isinstance(opt, FightAction):
             item["unit_id"] = opt.unit_id
             item["target_id"] = opt.target_id
+            _expect(item, state, opt.unit_id, opt.target_id, "fight")
             item["label"] = f"{state.unit(opt.unit_id).datasheet.name} [{opt.unit_id}] frappe {state.unit(opt.target_id).datasheet.name} [{opt.target_id}]"
         elif isinstance(opt, OathAction):
             item["target_id"] = opt.target_id
@@ -177,10 +192,13 @@ def decision_to_json(state: GameState, decision: Optional[Decision]) -> Optional
         elif isinstance(opt, EndPhaseAction):
             item["end_phase"] = True
             item["label"] = "Terminer la phase"
+        elif isinstance(opt, StratagemAction):
+            _stratagem_item(item, state, opt)
         options.append(item)
     ineligible = {uid: {"name": state.unit(uid).datasheet.name, "reason": why} for uid, why in decision.ineligible.items()}
     return {
         "kind": decision.kind,
+        "window": decision.window or None,
         "side": decision.side,
         "unit_id": decision.unit_id,
         "note": decision.note,
@@ -191,6 +209,51 @@ def decision_to_json(state: GameState, decision: Optional[Decision]) -> Optional
         "options": options,
         "ineligible": ineligible,
     }
+
+
+def _uname(state: GameState, uid: Optional[str]) -> str:
+    if uid is None:
+        return "?"
+    try:
+        return f"{state.unit(uid).datasheet.name} [{uid}]"
+    except KeyError:
+        return uid
+
+
+def stratagem_text(state: GameState, opt: StratagemAction) -> str:
+    """Ce que fait cette utilisation d'un stratagème, en clair."""
+    k, u, t = opt.stratagem, _uname(state, opt.unit_id), _uname(state, opt.target_id)
+    if k == "command_reroll":
+        return f"relancer le jet {'de charge' if opt.mode == 'charge' else 'd’Advance'} de {u}"
+    if k == "insane_bravery":
+        return f"{u} réussit son test de battle-shock d’office"
+    if k == "epic_challenge":
+        return f"[PRECISION] pour les armes de mêlée de {opt.model_id} ({u})"
+    if k == "explosives":
+        return f"{u} lance ses grenades sur {t} (6D6, 4+ = 1 BM)"
+    if k == "crushing_impact":
+        return f"{u} écrase {t} ({opt.model_id})"
+    if k == "fire_overwatch":
+        return f"{u} tire en opportunité sur {t} (6 non modifié pour toucher)"
+    if k == "smokescreen":
+        return f"{u} se couvre de fumée (couvert contre les tirs)"
+    if k == "heroic_intervention":
+        return f"{u} intervient — " + ("Leap to Defend (cibles qui ont chargé)" if opt.mode == "leap" else "Into the Fray (jet plafonné à 6, ennemis à 6\")")
+    if k == "counteroffensive":
+        return f"{u} combat tout de suite (Fights First)"
+    return str(opt)
+
+
+def _stratagem_item(item: Dict[str, Any], state: GameState, opt: StratagemAction) -> None:
+    if opt.stratagem is None:
+        item.update({"stratagem": None, "pass": True, "label": "Ne pas utiliser de stratagème"})
+        return
+    st = CORE_STRATAGEMS[opt.stratagem]
+    cost = cost_of(opt.stratagem, opt.mode)
+    item.update({"stratagem": opt.stratagem, "name": st.name, "cost": cost, "ref": st.ref, "unit_id": opt.unit_id, "target_id": opt.target_id,
+                 "model_id": opt.model_id, "mode": opt.mode, "label": f"{st.name} ({cost} CP) : {stratagem_text(state, opt)}"})
+    if opt.stratagem == "fire_overwatch" and opt.target_id:
+        _expect(item, state, opt.unit_id, opt.target_id, "snap")
 
 
 _MOVE_KIND_FR = {"normal": "déplace", "advance_move": "Advance", "advance": "Advance", "fall_back": "se replie", "desperate": "Desperate Escape",
@@ -242,6 +305,11 @@ def action_label(state: GameState, decision: Decision, action) -> str:
         return f"{name(action.unit_id)} frappe {name(action.target_id)}"
     if isinstance(action, OathAction):
         return f"Oath of Moment sur {name(action.target_id)}" if action.target_id else "pas d'Oath of Moment"
+    if isinstance(action, StratagemAction):
+        if action.stratagem is None:
+            st = WINDOWS.get(decision.window, (None,))[0]
+            return f"pas de {CORE_STRATAGEMS[st].name}" if st in CORE_STRATAGEMS else "pas de stratagème"
+        return f"{CORE_STRATAGEMS[action.stratagem].name} ({cost_of(action.stratagem, action.mode)} CP) : {stratagem_text(state, action)}"
     return str(action)
 
 
@@ -275,6 +343,9 @@ def state_to_json(state: GameState, decision: Optional[Decision], human_side: Op
         "human_side": human_side,
         "scores": state.scoreboard.totals(),
         "cp": dict(state.cp),
+        "stratagems": state.stratagems,
+        "stratagems_used": [{"side": e[0], "stratagem": e[1], "name": CORE_STRATAGEMS[e[1]].name, "unit_id": e[2], "round_turn": e[3], "phase": e[4]}
+                            for e in state.strat_used if e[1] in CORE_STRATAGEMS],
         "round_scores": {side: state.scoreboard.round_total(side, state.battle_round) for side in ("attacker", "defender")},
         "oath_target": state.oath_target,
         "units": [_unit_to_json(state, u) for u in state.units.values()],

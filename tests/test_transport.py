@@ -131,6 +131,7 @@ class TransportTests(unittest.TestCase):
         place(s.units["SM1"], 22, 50)
         s.units["EC1"].embarked_in = "CR1"
         eng = Engine()
+        eng.stop_at = {"end_turn"}  # les drapeaux « ce tour » sont remis à zéro au tour suivant
         eng.start_at(s, "movement", "attacker")
         eng.step(s, SelectUnitAction("CR1"))
         d = eng.decision(s)
@@ -144,8 +145,9 @@ class TransportTests(unittest.TestCase):
         ec1 = s.units["EC1"]
         self.assertTrue(ec1.no_charge)
         self.assertIsNotNone(eng.charge_ineligibility(s, ec1))
-        d = eng.decision(s)
-        self.assertNotIn(SelectUnitAction("EC1"), d.options)  # ne bouge plus
+        after = s.log[next(i for i, l in enumerate(s.log) if "débarquement rapide" in l) + 1:]
+        self.assertFalse(any(l.startswith("Mouvement : Infractors") for l in after))  # ne bouge plus
+        self.assertTrue(any("EC1 : a débarqué ce tour" in l for l in after))  # ni ne charge
 
     def test_no_disembark_after_transport_advanced(self):
         from fortyk.engine.actions import DeclareAdvanceAction
@@ -239,6 +241,7 @@ class TransportTests(unittest.TestCase):
         place(s.units["SM1"], 22, 50)
         s.units["EC1"].embarked_in = "CR1"
         eng = Engine()
+        eng.stop_at = {"end_turn"}
         eng.start_at(s, "movement", "attacker")
         eng.step(s, SelectUnitAction("CR1"))
         d = eng.decision(s)

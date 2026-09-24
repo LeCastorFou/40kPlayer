@@ -21,7 +21,11 @@ API (JSON) :
 * ``POST /api/g/<id>/action?t=`` — une action (protocole ci-dessous) ;
 * ``POST /api/g/<id>/undo?t=`` ``{to: index | null}`` — revenir avant l'action ``to`` (null : la
   dernière action d'un joueur) ; les dés suivants sont re-tirés ;
-* ``POST /api/g/<id>/settings?t=`` ``{step_mode}`` — pas à pas contre le bot ;
+* ``POST /api/g/<id>/settings?t=`` ``{step_mode, auto_actions, auto_deploy}`` — réglages du joueur ;
+* ``POST /api/g/<id>/check?t=`` — vérification à blanc d'un placement (pendant le glissement) ;
+* ``GET /api/g/<id>/state?…&wait=<version>`` — long-polling : répond dès que la partie change ;
+* ``GET /api/g/<id>/frames?from=i`` — positions après chaque action depuis ``i`` (rejeu animé) ;
+* ``GET /api/g/<id>/unit?id=<unité>`` — fiche complète d'une unité ;
 * ``POST /api/g/<id>/delete?t=`` — supprimer la partie (un de ses joueurs ; le fichier passe dans
   ``deleted/``, récupérable à la main, hors des listes et des exports) ;
 * ``GET /api/g/<id>/record`` — le document de la partie (sans jetons) ; ``GET /api/g/<id>/export`` —
@@ -230,7 +234,15 @@ class _Handler(BaseHTTPRequestHandler):
                 if what == "layout":
                     return self._json(room.layout_json)
                 if what == "state":
+                    if "wait" in qs:  # long-polling : on attend un changement (25 s au plus)
+                        room.wait_change(int(qs["wait"][0]), float(qs.get("timeout", ["25"])[0]))
+                        if room.deleted is not None:
+                            raise RoomDeleted(room.deleted)
                     return self._json(room.snapshot(token, int(qs.get("since", ["0"])[0])))
+                if what == "frames":
+                    return self._json(room.frames(int(qs.get("from", ["0"])[0])))
+                if what == "unit":
+                    return self._json(room.unit_details(qs.get("id", [""])[0]))
                 if what == "history":
                     return self._json({"history": room.history(), "timeline": room.record.get("timeline", 0)})
                 if what == "record":
@@ -287,7 +299,9 @@ class _Handler(BaseHTTPRequestHandler):
                     to = payload.get("to")
                     return self._json(room.undo(token, None if to is None else int(to)))
                 if what == "settings":
-                    return self._json(room.set_step_mode(token, bool(payload.get("step_mode", True))))
+                    return self._json(room.set_settings(token, payload))
+                if what == "check":
+                    return self._json(room.check(token, payload))
             self.send_error(404)
         except RoomError as err:
             self._json({"ok": False, "error": str(err), **({"deleted": True} if isinstance(err, RoomDeleted) else {})})
@@ -319,6 +333,7 @@ def serve(host: str = "127.0.0.1", port: int = 8040, cat: Optional[Catalog] = No
     cat = cat or load_catalog()
     app = App(cat, data_dir=data_dir)
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
+    httpd.daemon_threads = True  # les clients en attente (long-polling) ne bloquent pas l'arrêt
     shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
     url = f"http://{shown}:{port}/"
     if quick:

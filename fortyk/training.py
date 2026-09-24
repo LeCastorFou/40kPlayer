@@ -36,7 +36,12 @@ def build_initial_state(cat: Catalog, config: Dict[str, Any]) -> GameState:
     for side in SIDES:
         text = (lists.get(side) or {}).get("text")
         resolved.append(resolve_text(text, cat) if text else None)
-    return new_state_from_lists(resolved[0], resolved[1], cat, layout=config.get("layout", "layout_a"), seed=int(config["seed"]))
+    state = new_state_from_lists(resolved[0], resolved[1], cat, layout=config.get("layout", "layout_a"), seed=int(config["seed"]))
+    # règles du moteur à la création de la partie : une partie enregistrée avant l'arrivée des
+    # stratagèmes (sans ces clés) se rejoue avec les règles d'alors
+    state.rev = int(config.get("rev", 1))
+    state.stratagems = bool(config.get("stratagems", False))
+    return state
 
 
 def iter_replay(engine: Engine, initial: GameState, record: Dict[str, Any]) -> Iterator[Tuple[int, GameState, Decision, Dict[str, Any]]]:
@@ -95,6 +100,8 @@ def observation(state: GameState) -> Dict[str, Any]:
         "first_player": state.first_player,
         "scores": state.scoreboard.totals(),
         "cp": dict(state.cp),
+        # stratagèmes utilisés jusqu'ici : [camp, clé, unité, tour, phase]
+        "stratagems_used": [list(e[:5]) for e in state.strat_used],
         "objectives": {o.id: state.objective_controller(o) for o in state.layout.objectives},
         "units": units,
     }

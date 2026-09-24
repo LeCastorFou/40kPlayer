@@ -35,6 +35,7 @@ from ..agents import RandomAgent
 from ..data import Catalog
 from ..engine import Engine
 from ..engine.actions import (
+    DeployAction,
     AutoChargeMoveAction,
     ChargeAction,
     ContinueAction,
@@ -50,6 +51,7 @@ from ..engine.actions import (
     OathAction,
     SelectUnitAction,
     ShootAction,
+    StratagemAction,
 )
 from ..engine.movement import FormationMove, MoveKind
 from ..engine.record import action_from_json, action_to_json
@@ -139,6 +141,13 @@ def decode_action(decision: Decision, payload: Dict[str, Any]):
             if isinstance(opt, (ShootAction, ChargeAction, OathAction)) and opt.target_id == tid:
                 return opt
         raise ValueError(f"{tid} n'est pas une cible possible")
+    if kind == "stratagem":  # {"type": "stratagem", "stratagem": clé ou null, "unit_id", "target_id", "model_id", "mode"}
+        want = payload.get("stratagem")
+        for opt in decision.options:
+            if isinstance(opt, StratagemAction) and opt.stratagem == want and (want is None or all(
+                    payload.get(k) in (None, getattr(opt, k)) for k in ("unit_id", "target_id", "model_id", "mode"))):
+                return opt
+        raise ValueError("ce stratagème n'est pas utilisable maintenant")
     if kind == "fight":
         for opt in decision.options:
             if isinstance(opt, FightAction) and opt.unit_id == payload["unit_id"] and opt.target_id == payload["target_id"]:
@@ -188,7 +197,7 @@ def new_record(store: Optional["GameStore"], lists: Dict[str, Optional[Dict[str,
         "title_auto": title is None,
         "created": _now(),
         "updated": _now(),
-        "config": {"layout": layout, "seed": seed, "deploy": True, "dice_after_undo": "new",
+        "config": {"layout": layout, "seed": seed, "deploy": True, "dice_after_undo": "new", "rev": 2, "stratagems": True,
                    "lists": {side: (dict(lists[side]) if lists.get(side) else None) for side in SIDES}},
         "players": pl,
         "history": [],
@@ -336,7 +345,9 @@ class Room:
         self.store = store
         self.record = record
         self.lock = threading.RLock()
+        self.cond = threading.Condition(self.lock)  #: réveille les clients en attente (long-polling)
         self.engine = Engine(listener=self._on_event)
+        self.sim = Engine()  #: moteur sans écouteur pour les simulations (vérification en direct)
         self.initial = build_initial_state(cat, record["config"])
         self.layout_json = layout_to_json(self.initial.layout, self.initial.rules)
         self.version = 0
@@ -423,8 +434,10 @@ class Room:
 
     # ------------------------------------------------------------ jeu
 
-    def _apply(self, side: str, decision: Decision, action, by: str) -> None:
-        """Enregistre et applique une action ; en cas d'erreur du moteur, revient à l'état d'avant."""
+    def _apply(self, side: str, decision: Decision, action, by: str, **flags) -> None:
+        """Enregistre et applique une action ; en cas d'erreur du moteur, revient à l'état d'avant.
+        ``by`` : human, bot ou auto (réglage « actions automatiques » du joueur) ; ``flags`` :
+        ``implicit=True`` pour une sélection d'unité faite en agissant directement sur elle."""
         s = self.state
         entry = {
             "i": len(self.record["history"]),
@@ -437,6 +450,7 @@ class Room:
             "label": action_label(s, decision, action),
             "action": action_to_json(action),
             "t": _now(),
+            **flags,
         }
         before = s.clone()
         try:
@@ -462,12 +476,97 @@ class Room:
                 return
             bot = self.bots.get(d.side)
             if bot is None:
-                return
-            self._apply(d.side, d, bot.choose(self.state, d), by="bot")
+                auto = self._auto_choice(d)
+                if auto is None:
+                    return
+                self._apply(d.side, d, auto, by="auto")
+            else:
+                self._apply(d.side, d, bot.choose(self.state, d), by="bot")
             guard += 1
             if guard > 5000:
                 self.error = "le bot ne rend pas la main"
                 return
+
+    # ------------------------------------------------------------ réglages et automatismes
+
+    SETTINGS = {"step_mode": True, "auto_actions": True, "auto_deploy": False, "stratagems": True}
+
+    def setting(self, side: str, key: str) -> bool:
+        return bool(self.record["players"][side].get(key, self.SETTINGS[key]))
+
+    def _auto_choice(self, d: Decision):
+        """Action jouée d'office pour un joueur humain, selon ses réglages ; None = on lui demande."""
+        side = d.side
+        if self.record["players"][side]["kind"] != "human":
+            return None
+        if d.kind == "stratagem" and not self.setting(side, "stratagems"):
+            return next(o for o in d.options if isinstance(o, StratagemAction) and o.stratagem is None)  # fenêtres coupées : on passe
+        if self.setting(side, "auto_deploy") and self.state.phase == "deployment":
+            if d.kind == "select_unit":
+                units = [o for o in d.options if isinstance(o, SelectUnitAction)]
+                return units[0] if units else None
+            if d.kind == "deploy":
+                return self._auto_deploy_spot(d)
+        if not self.setting(side, "auto_actions"):
+            return None
+        if d.kind == "fight" and len(d.options) == 1:
+            return d.options[0]
+        if d.kind == "shoot":
+            targets = [o for o in d.options if isinstance(o, ShootAction) and o.target_id is not None]
+            if len(targets) == 1:
+                return targets[0]
+        if d.kind in ("oath", "charge_target"):
+            real = [o for o in d.options if getattr(o, "target_id", None) is not None]
+            if len(real) == 1 and len(d.options) == 1:
+                return real[0]
+        return None
+
+    def _auto_deploy_spot(self, d: Decision):
+        """Position de déploiement automatique : parmi celles que propose le moteur, la plus proche du
+        centre de la zone (le moteur écarte déjà les chevauchements et la sortie de zone)."""
+        spots = [o for o in d.options if isinstance(o, DeployAction)]
+        if not spots:
+            return None
+        zone = self.state.layout.deployment_zones[d.side].vertices
+        cx = sum(v[0] for v in zone) / len(zone)
+        cy = sum(v[1] for v in zone) / len(zone)
+        return min(spots, key=lambda o: (o.x - cx) ** 2 + (o.y - cy) ** 2)
+
+    def set_settings(self, token: Optional[str], values: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            side = self._require_player(token)
+            p = self.record["players"][side]
+            for key in self.SETTINGS:
+                if key in values:
+                    p[key] = bool(values[key])
+            if not self.setting(side, "step_mode") and self.observe and self.observe["side"] == side:
+                self.observe = None
+            self._drive()
+            self._changed()
+            return {"ok": True, **{k: self.setting(side, k) for k in self.SETTINGS}}
+
+    # ------------------------------------------------------------ actions des joueurs
+
+    _DIRECT = {"model_move", "declare_advance", "stationary", "declare_charge", "disembark_models"}
+
+    def _decide(self, side: str, d: Decision, payload: Dict[str, Any]):
+        """Décode et valide une action ; lève RoomError si elle est refusée."""
+        try:
+            action = decode_action(d, payload)
+        except (KeyError, ValueError, IndexError, TypeError) as err:
+            raise RoomError(str(err)) from err
+        if action not in d.options:
+            err = self.engine.free_action_error(self.state, d, action)
+            if err is not None:
+                raise RoomError(f"Action illégale : {err}")
+        return action
+
+    def _implicit_select(self, d: Decision, payload: Dict[str, Any]):
+        """Action directe sur une unité pendant « quelle unité ? » : la sélection qu'elle implique."""
+        if d.kind != "select_unit" or payload.get("type") not in self._DIRECT:
+            return None
+        uid = payload.get("unit_id")
+        return next((o for o in d.options if isinstance(o, SelectUnitAction) and o.unit_id == uid), None)
 
     def act(self, token: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
         with self.lock:
@@ -485,28 +584,126 @@ class Room:
                 raise RoomError("la partie est terminée")
             if d.side != side:
                 raise RoomError("ce n'est pas à toi de jouer")
-            try:
-                action = decode_action(d, payload)
-            except (KeyError, ValueError, IndexError, TypeError) as err:
-                raise RoomError(str(err)) from err
-            if action not in d.options:
-                err = self.engine.free_action_error(self.state, d, action)
-                if err is not None:
-                    raise RoomError(f"Action illégale : {err}")
+            select = self._implicit_select(d, payload)
+            if select is not None:
+                # glisser directement une unité : on la sélectionne, puis on joue l'action ; si
+                # l'action est refusée, la sélection est défaite (rien n'a bougé)
+                self._apply(side, d, select, by="human", implicit=True)
+                d = self.engine.decision(self.state)
+                try:
+                    if d is None or d.side != side:
+                        raise RoomError("cette unité ne peut pas faire cela maintenant")
+                    action = self._decide(side, d, payload)
+                except RoomError:
+                    self.state = self.snaps.pop()
+                    self.record["history"].pop()
+                    raise
+            else:
+                action = self._decide(side, d, payload)
             self._apply(side, d, action, by="human")
             self._drive()
             self._changed()
             return {"ok": True}
 
-    def set_step_mode(self, token: Optional[str], on: bool) -> Dict[str, Any]:
+    def check(self, token: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Vérification à blanc d'un placement (pendant le glissement) : rien n'est joué ni enregistré.
+        Retourne {ok, error, model_id} (la figurine fautive quand le message la nomme)."""
         with self.lock:
             side = self._require_player(token)
-            self.record["players"][side]["step_mode"] = bool(on)
-            if not on and self.observe and self.observe["side"] == side:
-                self.observe = None
-                self._drive()
-            self._changed()
-            return {"ok": True, "step_mode": bool(on)}
+            d = self.engine.decision(self.state)
+            if d is None or d.side != side:
+                return {"ok": False, "error": "ce n'est pas à toi de jouer", "model_id": None}
+            state = self.state
+            select = self._implicit_select(d, payload)
+            if select is not None:
+                state = self.state.clone(record=False)
+                self.sim.step(state, select, validate=False)
+                d = self.sim.decision(state)
+            try:
+                action = decode_action(d, payload)
+            except (KeyError, ValueError, IndexError, TypeError) as err:
+                return {"ok": False, "error": str(err), "model_id": None}
+            err = None if action in d.options else self.sim.free_action_error(state, d, action)
+        if err is None:
+            return {"ok": True, "error": None, "model_id": None}
+        m = re.match(r"^([A-Za-z0-9]+\.\d+)\b", err)
+        return {"ok": False, "error": err, "model_id": m.group(1) if m else None}
+
+    def frames(self, start: int, limit: int = 150) -> Dict[str, Any]:
+        """Positions des figurines avant l'action ``start`` puis après chacune des suivantes (rejeu animé
+        de « ce qui s'est passé pendant ton absence ») ; seules les figurines qui changent sont listées."""
+        with self.lock:
+            n = len(self.record["history"])
+            start = max(0, min(int(start), n), n - limit)
+
+            def pose(st: GameState) -> Dict[str, list]:
+                return {m.id: [round(m.x, 3), round(m.y, 3), round(m.angle, 4), 1 if m.alive else 0, m.wounds, 1 if u.embarked_in is None else 0]
+                        for u in st.units.values() for m in u.models}
+
+            first = self.snaps[start] if start < n else self.state
+            prev = pose(first)
+            frames = []
+            for i in range(start, n):
+                after = self.snaps[i + 1] if i + 1 < n else self.state
+                cur = pose(after)
+                h = self.record["history"][i]
+                frames.append({"i": i, "side": h["side"], "by": h.get("by", "human"), "label": h.get("label"), "round": h.get("round"),
+                               "phase": h.get("phase"),
+                               "models": {mid: v for mid, v in cur.items() if prev.get(mid) != v}})
+                prev = cur
+            return {"start": start, "initial": pose(first), "frames": frames, "timeline": self.record.get("timeline", 0)}
+
+    def unit_details(self, uid: str) -> Dict[str, Any]:
+        """Fiche complète d'une unité pour le panneau latéral."""
+        with self.lock:
+            try:
+                u = self.state.unit(uid)
+            except KeyError as err:
+                raise RoomError(f"unité inconnue : {uid}") from err
+            profiles: Dict[str, Dict[str, Any]] = {}
+            for m in u.models:
+                p = m.profile
+                row = profiles.setdefault(p.name, {"name": p.name, "M": p.move_in, "T": p.toughness, "Sv": p.save, "InSv": p.invuln, "W": p.wounds,
+                                                   "Ld": p.leadership, "OC": p.oc, "alive": 0, "total": 0})
+                row["total"] += 1
+                row["alive"] += 1 if m.alive else 0
+            weapons: Dict[tuple, Dict[str, Any]] = {}
+            for m in u.models:
+                if not m.alive:
+                    continue
+                for w in m.weapons:
+                    key = (w.name, w.kind)
+                    row = weapons.setdefault(key, {"name": w.name, "kind": w.kind, "range": None if w.is_melee else w.range_in, "A": str(w.attacks),
+                                                   "skill": w.skill, "S": w.strength, "AP": w.ap, "D": str(w.damage),
+                                                   "keywords": [str(k) for k in w.keywords], "count": 0})
+                    row["count"] += 1
+            sheets = [u.datasheet, *u.leaders]
+            abilities = []
+            seen = set()
+            for ds in sheets:
+                for a in ds.abilities:
+                    key = (a.name, a.parameter)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    abilities.append({"name": a.name + (f" {a.parameter}" if a.parameter else ""), "type": a.type,
+                                      "text": (a.text or "")[:600], "from": ds.name if ds is not u.datasheet else None})
+            return {
+                "id": u.id, "side": u.side, "name": u.datasheet.name, "leaders": [l.name for l in u.leaders],
+                "enhancements": list(u.enhancements), "points": u.points, "warlord": u.is_warlord,
+                "keywords": list(u.datasheet.keywords), "faction_keywords": list(u.datasheet.faction_keywords),
+                "profiles": list(profiles.values()), "weapons": sorted(weapons.values(), key=lambda w: (w["kind"] != "ranged", w["name"])),
+                "abilities": abilities, "transport": u.datasheet.transport or None,
+            }
+
+    def wait_change(self, version: int, timeout: float = 25.0) -> None:
+        """Long-polling : attend que la partie change (ou ``timeout``) si le client a déjà ``version``."""
+        with self.cond:
+            if self.version == version and self.deleted is None:
+                self.cond.wait(timeout)
+
+    def set_step_mode(self, token: Optional[str], on: bool) -> Dict[str, Any]:
+        return self.set_settings(token, {"step_mode": on})
 
     # ------------------------------------------------------------ annulation
 
@@ -523,6 +720,8 @@ class Room:
                 if not humans:
                     raise RoomError("aucune action de joueur à annuler")
                 k = humans[-1]
+                if k > 0 and hist[k - 1].get("implicit") and not hist[k].get("implicit"):
+                    k -= 1  # l'action directe sur une unité compte pour une seule action
             else:
                 k = int(to)
                 if not 0 <= k < len(hist):
@@ -559,6 +758,11 @@ class Room:
     # ------------------------------------------------------------ état → JSON
 
     def _changed(self, save: bool = True) -> None:
+        with self.cond:
+            self._changed_locked(save)
+            self.cond.notify_all()
+
+    def _changed_locked(self, save: bool) -> None:
         if self.deleted is not None:
             return
         s = self.state
@@ -581,7 +785,7 @@ class Room:
 
     def history(self) -> List[Dict[str, Any]]:
         with self.lock:
-            return [{k: h.get(k) for k in ("i", "side", "by", "decision", "round", "phase", "label", "t")} for h in self.record["history"]]
+            return [{k: h.get(k) for k in ("i", "side", "by", "decision", "round", "phase", "label", "t", "implicit")} for h in self.record["history"]]
 
     def snapshot(self, token: Optional[str], since: int = 0) -> Dict[str, Any]:
         with self.lock:
@@ -618,7 +822,8 @@ class Room:
             "engine_error": self.error,
             "last_error": None,
             "waiting_for_human": d is not None and viewer is not None and d.side == viewer,
-            "step_mode": bool(viewer and rec["players"][viewer].get("step_mode", True)),
+            "step_mode": bool(viewer and self.setting(viewer, "step_mode")),
+            "settings": {k: self.setting(viewer, k) for k in self.SETTINGS} if viewer else None,
             "timeline": rec.get("timeline", 0),
             "history_length": len(rec["history"]),
             "can_undo": viewer is not None and any(h.get("by", "human") == "human" for h in rec["history"]),
@@ -703,9 +908,10 @@ class Rooms:
             if record.get("status") == "waiting" and by == (record.get("join") or {}).get("side"):
                 raise RoomError("seul le créateur peut supprimer une partie en attente")
             if room is not None:
-                with room.lock:
+                with room.cond:
                     info = self.store.delete(room.record, by)
                     room.deleted = info
+                    room.cond.notify_all()  # réveille les clients en attente : ils voient la suppression
             else:
                 info = self.store.delete(record, by)
             self._rooms.pop(gid, None)

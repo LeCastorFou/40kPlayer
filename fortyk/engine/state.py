@@ -405,6 +405,15 @@ class Flow:
     fight_side: str = "attacker"
     last_activator: Optional[str] = None
     over_reason: str = ""
+    # stratagèmes (15) : fenêtre de réaction ouverte (clé, camp qui décide, étape de reprise)
+    window: str = ""
+    window_side: str = ""
+    window_unit: Optional[str] = None
+    resume: str = ""
+    bs_queue: List[str] = field(default_factory=list)  #: commandement : unités qui font un test de battle-shock
+    hi: bool = False  #: une Heroic Intervention est en cours (la charge est celle du joueur inactif)
+    charger: Optional[str] = None  #: camp de l'unité qui charge (None = joueur actif)
+    forced_fighter: Optional[str] = None  #: Counteroffensive : unité qui doit combattre ensuite
     decision: object = None  #: décision en attente, mise en cache (partagée entre clones : immuable)
 
     def clone(self) -> "Flow":
@@ -420,6 +429,7 @@ class Flow:
         f.targets = list(self.targets)
         f.fight_start_engaged = list(self.fight_start_engaged)
         f.fight_seen = list(self.fight_seen)
+        f.bs_queue = list(self.bs_queue)
         return f
 
 
@@ -444,6 +454,14 @@ class GameState:
     destroyed_this_turn: int = 0  #: unités ennemies détruites pendant le tour en cours
     turn_counter: int = 0  #: tours de joueur commencés depuis le début de la bataille (1 = premier tour)
     cp: Dict[str, int] = field(default_factory=lambda: {"attacker": 0, "defender": 0})  #: points de commandement
+    #: stratagèmes (15) proposés aux joueurs (fenêtres de réaction, CP dépensés) ; désactivé par défaut
+    #: pour les simulations et les parties enregistrées avant leur arrivée
+    stratagems: bool = False
+    #: stratagèmes utilisés : (camp, clé, unité, tour, phase, détail) — limites de 15.01 et effets en cours
+    strat_used: List[tuple] = field(default_factory=list)
+    #: révision des règles du moteur : 2 = drapeaux « ce tour » remis à zéro pour les deux camps à chaque
+    #: tour (1 = comportement des parties enregistrées avant, rejouées à l'identique)
+    rev: int = 2
     charge_targets_this_phase: Set[str] = field(default_factory=set)
     log: List[str] = field(default_factory=list)
     events: List[dict] = field(default_factory=list)  #: journal structuré (voir Engine._say)
@@ -605,6 +623,7 @@ class GameState:
         new.controlled_at_turn_start = set(self.controlled_at_turn_start)
         new.charge_targets_this_phase = set(self.charge_targets_this_phase)
         new.cp = dict(self.cp)
+        new.strat_used = list(self.strat_used)
         new.flow = self.flow.clone() if self.flow is not None else None
         keep = self.recording if record is None else record
         new.recording = keep

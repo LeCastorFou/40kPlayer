@@ -5,6 +5,7 @@ import random
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -14,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fortyk.data import default_raw_dir, load_catalog  # noqa: E402
-from fortyk.engine.actions import EndPhaseAction  # noqa: E402
+from fortyk.engine.actions import Decision, EndPhaseAction, FightAction, ShootAction, StratagemAction  # noqa: E402
 from fortyk.web.rooms import GameStore, Room, RoomError  # noqa: E402
 from fortyk.web.server import App, make_handler  # noqa: E402
 
@@ -128,6 +129,136 @@ class RoomTests(unittest.TestCase):
         d = room.engine.decision(room.state)
         self.assertEqual(d.side, "attacker")  # retour à la dernière décision humaine, le bot ne rejoue pas tout seul
 
+    def to_movement(self):
+        """Déploiement automatique des deux camps, puis phases de scouts terminées : premier mouvement."""
+        room, tok = self.new()
+        room.set_settings(tok["defender"], {"auto_deploy": True})
+        out = room.set_settings(tok["attacker"], {"auto_deploy": True})
+        self.assertTrue(out["auto_deploy"] and out["auto_actions"] and out["step_mode"])
+        self.assertGreater(len(room.record["history"]), 0)
+        self.assertTrue(all(h["by"] == "auto" for h in room.record["history"]))
+        for _ in range(10):
+            if room.state.phase == "movement":
+                break
+            d = room.engine.decision(room.state)
+            room.act(tok[d.side], {"type": "end_phase"})
+        self.assertEqual(room.state.phase, "movement")
+        return room, tok
+
+    def test_direct_move_without_selecting_and_live_check(self):
+        room, tok = self.to_movement()
+        d = room.engine.decision(room.state)
+        self.assertEqual((d.kind, d.side), ("select_unit", "defender"))
+        t = tok["defender"]
+        u = room.state.unit("EC1")
+        good = {m.id: [m.x + 4, m.y] for m in u.models}
+        bad = {m.id: [m.x, m.y - 9] for m in u.models}
+        move = {"type": "model_move", "unit_id": "EC1", "kind": "normal"}
+        # vérification à blanc pendant le glissement : rien n'est joué
+        n, sig = len(room.record["history"]), signature(room.state)
+        self.assertEqual(room.check(t, {**move, "positions": good}), {"ok": True, "error": None, "model_id": None})
+        res = room.check(t, {**move, "positions": bad})
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["model_id"], "EC1.1")
+        self.assertIn('plus que 7"', res["error"])
+        self.assertFalse(room.check(tok["attacker"], {**move, "positions": good})["ok"])  # pas son tour
+        self.assertEqual((len(room.record["history"]), signature(room.state)), (n, sig))
+        # action refusée : la sélection implicite est défaite
+        with self.assertRaisesRegex(RoomError, "plus que 7"):
+            room.act(t, {**move, "positions": bad})
+        self.assertEqual((len(room.record["history"]), signature(room.state)), (n, sig))
+        self.assertEqual(room.engine.decision(room.state).kind, "select_unit")
+        # glisser l'unité directement : sélection implicite + mouvement, en une action
+        room.act(t, {**move, "positions": good})
+        tail = room.record["history"][n:]
+        self.assertEqual([(h["decision"], h.get("implicit")) for h in tail], [("select_unit", True), ("move", None)])
+        self.assertAlmostEqual(room.state.unit("EC1").models[0].x, u.models[0].x + 4, places=3)
+        self.assertTrue(room.history()[-2]["implicit"])
+        # une seule annulation défait les deux
+        room.undo(t)
+        self.assertEqual((len(room.record["history"]), room.state.unit("EC1").models[0].x), (n, u.models[0].x))
+
+    def test_auto_actions_follow_player_settings(self):
+        room, tok = self.new()
+        shoot = Decision("shoot", "attacker", [ShootAction("SM1", "EC1"), ShootAction("SM1", None)], unit_id="SM1")
+        two = Decision("shoot", "attacker", [ShootAction("SM1", "EC1"), ShootAction("SM1", "EC2"), ShootAction("SM1", None)], unit_id="SM1")
+        fight = Decision("fight", "attacker", [FightAction("SM1", "EC1")], unit_id="SM1")
+        self.assertEqual(room._auto_choice(shoot), ShootAction("SM1", "EC1"))  # une seule cible possible
+        self.assertIsNone(room._auto_choice(two))  # un vrai choix : on demande
+        self.assertEqual(room._auto_choice(fight), FightAction("SM1", "EC1"))
+        room.set_settings(tok["attacker"], {"auto_actions": False})
+        self.assertIsNone(room._auto_choice(shoot))
+        self.assertIsNone(room._auto_choice(fight))
+        self.assertFalse(room.snapshot(tok["attacker"])["settings"]["auto_actions"])
+        self.assertTrue(room.snapshot(tok["defender"])["settings"]["auto_actions"])  # réglage par joueur
+        with self.assertRaises(RoomError):
+            room.set_settings(None, {"auto_actions": True})  # spectateur
+        # les réglages survivent au rechargement
+        again = Room(self.cat, self.store, self.store.load(room.record["id"]))
+        self.assertFalse(again.setting("attacker", "auto_actions"))
+
+    def test_frames_unit_details_and_long_poll(self):
+        room, tok = self.to_movement()
+        n = len(room.record["history"])
+        f = room.frames(0)
+        self.assertEqual((f["start"], len(f["frames"])), (0, n))
+        first = f["frames"][1]  # déploiement de la première unité
+        self.assertEqual(first["label"], room.record["history"][1]["label"])
+        self.assertTrue(first["models"])
+        self.assertTrue(all(v[5] == 1 for v in first["models"].values()))  # posées sur la table
+        self.assertEqual(room.frames(n)["frames"], [])
+        det = room.unit_details("SM1")
+        self.assertEqual(det["name"], "Intercessor Squad")
+        self.assertEqual(det["profiles"][0]["T"], 4)
+        self.assertTrue(any(w["kind"] == "ranged" for w in det["weapons"]))
+        with self.assertRaises(RoomError):
+            room.unit_details("ZZ9")
+        # long-polling : le client qui attend est réveillé dès qu'une action est jouée
+        v = room.version
+        woke = []
+        th = threading.Thread(target=lambda: (room.wait_change(v, timeout=10), woke.append(room.version)))
+        th.start()
+        room.act(tok["defender"], {"type": "select_unit", "unit_id": "EC1"})
+        th.join(5)
+        self.assertEqual(len(woke), 1)
+        self.assertGreater(woke[0], v)
+        t0 = time.monotonic()
+        room.wait_change(v, timeout=5)  # version déjà dépassée : retour immédiat
+        self.assertLess(time.monotonic() - t0, 1)
+
+    def test_stratagem_windows_settings_and_protocol(self):
+        from fortyk.training import build_initial_state
+        from fortyk.web.rooms import decode_action
+        from fortyk.web.serialize import action_label, decision_to_json
+
+        room, tok = self.new()
+        self.assertEqual((room.record["config"]["rev"], room.record["config"]["stratagems"]), (2, True))
+        self.assertTrue(room.state.stratagems)
+        old = dict(room.record["config"])
+        del old["rev"], old["stratagems"]  # partie enregistrée avant les stratagèmes : rejouée sans
+        legacy = build_initial_state(self.cat, old)
+        self.assertEqual((legacy.rev, legacy.stratagems), (1, False))
+        use = StratagemAction("fire_overwatch", "SM1", target_id="EC1")
+        d = Decision("stratagem", "attacker", [use, StratagemAction(None)], window="fire_overwatch", note="…")
+        self.assertIsNone(room._auto_choice(d))  # fenêtres affichées par défaut
+        self.assertEqual(decode_action(d, {"type": "stratagem", "stratagem": "fire_overwatch", "unit_id": "SM1", "target_id": "EC1"}), use)
+        self.assertEqual(decode_action(d, {"type": "stratagem", "stratagem": None}), StratagemAction(None))
+        with self.assertRaises(ValueError):
+            decode_action(d, {"type": "stratagem", "stratagem": "explosives"})
+        js = decision_to_json(room.state, d)
+        self.assertEqual(js["window"], "fire_overwatch")
+        self.assertEqual((js["options"][0]["cost"], js["options"][0]["name"]), (1, "Fire Overwatch"))
+        self.assertIn("expected_damage", js["options"][0])
+        self.assertTrue(js["options"][1]["pass"])
+        self.assertEqual(action_label(room.state, d, StratagemAction(None)), "pas de Fire Overwatch")
+        self.assertIn("Fire Overwatch (1 CP)", action_label(room.state, d, use))
+        room.set_settings(tok["attacker"], {"stratagems": False})
+        self.assertEqual(room._auto_choice(d), StratagemAction(None))  # coupées : on passe sans demander
+        snap = room.snapshot(tok["attacker"])
+        self.assertFalse(snap["settings"]["stratagems"])
+        self.assertTrue(snap["stratagems"])
+        self.assertEqual(snap["stratagems_used"], [])
+
     def test_full_game_vs_bot_and_training_export(self):
         from fortyk.training import training_export
 
@@ -220,6 +351,30 @@ class HttpTests(unittest.TestCase):
         self.assertNotIn(ta, json.dumps(games))
         with self.assertRaises(urllib.error.HTTPError):
             request(base, "/api/g/inconnue/state")
+
+    def test_fluidity_endpoints(self):
+        base, app = self.serve()
+        res = request(base, "/api/games", {"lists": {"attacker": None, "defender": None}, "players": HUMANS})
+        gid = res["id"]
+        ta = res["links"]["attacker"].split("t=")[1]
+        out = request(base, f"/api/g/{gid}/settings?t={ta}", {"auto_deploy": True, "step_mode": False})
+        self.assertTrue(out["ok"] and out["auto_deploy"] and not out["step_mode"])
+        st = request(base, f"/api/g/{gid}/state?since=0&t={ta}")
+        self.assertEqual(st["settings"], {"step_mode": False, "auto_actions": True, "auto_deploy": True, "stratagems": True})
+        self.assertEqual(st["pending"]["side"], "defender")  # l'attaquant a été déployé d'office
+        self.assertIn("cp", st)
+        # long-polling : sans changement, la réponse arrive après le délai demandé
+        t0 = time.monotonic()
+        st2 = request(base, f"/api/g/{gid}/state?since=0&t={ta}&wait={st['version']}&timeout=0.4")
+        self.assertGreaterEqual(time.monotonic() - t0, 0.35)
+        self.assertEqual(st2["version"], st["version"])
+        chk = request(base, f"/api/g/{gid}/check?t={ta}", {"type": "deploy_models", "unit_id": "SM1", "positions": {}})
+        self.assertFalse(chk["ok"])
+        fr = request(base, f"/api/g/{gid}/frames?from=0")
+        self.assertEqual(len(fr["frames"]), st["history_length"])
+        self.assertEqual(request(base, f"/api/g/{gid}/unit?id=SM3")["name"], "Redemptor Dreadnought")
+        with self.assertRaises(urllib.error.HTTPError):
+            request(base, f"/api/g/{gid}/unit?id=nope")
 
     def test_delete_game(self):
         base, app = self.serve()

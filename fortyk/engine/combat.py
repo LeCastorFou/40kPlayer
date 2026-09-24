@@ -47,6 +47,7 @@ from .attack import (
 from .geometry import disk_gap, within
 from .rules import DEFAULT_RULES, save_needed
 from .state import GameState, Model, Unit
+from .stratagems import effect_of
 
 __all__ = [
     "CombatReport",
@@ -188,7 +189,10 @@ def _unit_has_cover_from(state: GameState, shooter: Model, target: Unit) -> bool
     à cause des décors. Un MONSTER / VEHICLE n'a donc le couvert que s'il n'est pas pleinement visible.
 
     Les cartes ne donnent pas les murs des ruines : une figurine entièrement dans l'empreinte d'une
-    ruine est considérée comme partiellement masquée par ses murs (règle validée avec Valentin)."""
+    ruine est considérée comme partiellement masquée par ses murs (règle validée avec Valentin).
+    Smokescreen (15.10) : l'unité SMOKE visée a le couvert jusqu'à la fin de la phase."""
+    if state.strat_used and effect_of(state, "smokescreen", target.id):
+        return True
     in_area_ok = any(target.has_keyword(k) for k in state.rules.cover_keywords) and not is_vehicle_or_monster(target)
     for m in target.alive_models:
         if in_area_ok and state.layout.disk_touches_area(m.disk):
@@ -422,8 +426,39 @@ def shooting_targets(state: GameState, unit: Unit) -> List[Unit]:
     return out
 
 
-def build_shooting_profiles(state: GameState, unit: Unit, target: Unit) -> Tuple[List[AttackProfile], int]:
-    """Profils d'attaque du tir de ``unit`` sur ``target`` et nombre d'armes Hazardous utilisées."""
+def snap_targets(state: GameState, unit: Unit, max_range: float = 24.0) -> List[Unit]:
+    """Cibles d'un tir d'opportunité (15.09) : unités ennemies à ``max_range`` de l'unité, visées selon
+    les règles normales et visibles (le tir indirect ne compte pas)."""
+    out = []
+    engaged = state.is_engaged(unit)
+    big_guns = _big_guns(state, unit)
+    for enemy in shooting_targets(state, unit):
+        if unit.min_gap_to(enemy) > max_range + 1e-9:
+            continue
+        cap = targeting_range_cap(state, enemy)
+        hidden = hidden_model_ids(state, enemy)
+        if any(_weapon_usable(unit, w, engaged, big_guns) and _visible_targets_in_range(state, m, w, enemy, hidden=hidden, cap=cap)
+               for m in unit.alive_models for w in m.ranged_weapons):
+            out.append(enemy)
+    return out
+
+
+def explosives_targets(state: GameState, unit: Unit, max_range: float = 8.0) -> List[Unit]:
+    """Explosives (15.05) : unités ennemies désengagées à 8" d'une figurine de l'unité et visibles
+    d'elle (une figurine cachée l'est à cette distance)."""
+    out = []
+    for enemy in state.enemies_of(unit.side):
+        if state.is_engaged(enemy):
+            continue
+        if any(within(m.disk, e.disk, max_range) and state.los.visible(m.disk, e.disk) for m in unit.alive_models for e in enemy.alive_models):
+            out.append(enemy)
+    return out
+
+
+def build_shooting_profiles(state: GameState, unit: Unit, target: Unit, snap: bool = False) -> Tuple[List[AttackProfile], int]:
+    """Profils d'attaque du tir de ``unit`` sur ``target`` et nombre d'armes Hazardous utilisées.
+    ``snap`` : tir d'opportunité (15.09) — cible visible uniquement (pas de tir indirect), chaque
+    attaque ne touche que sur un 6 non modifié, pas de relance des touches."""
     rules = state.rules
     engaged = state.is_engaged(unit)
     blast_forbidden = any(target.in_engagement_range_of(f, rules) for f in state.units_of(unit.side))
@@ -447,7 +482,7 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit) -> Tuple
     hidden = hidden_model_ids(state, target)
     # tir indirect (10.07) : dès qu'une arme [INDIRECT FIRE] tire sans voir la cible, l'unité tire en
     # « indirect shooting » et toutes ses attaques [INDIRECT FIRE] en subissent les règles
-    indirect_ok = _can_shoot_indirect(state, unit)
+    indirect_ok = _can_shoot_indirect(state, unit) and not snap
     seen: Dict[str, List[Weapon]] = {}
     blind: Dict[str, List[Weapon]] = {}
     for m in unit.alive_models:
@@ -512,6 +547,8 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit) -> Tuple
     profiles = []
     for (name, hit_mod, extra_attacks, skill_worse, min_hit), count in groups.items():
         w = weapons_by_name[name]
+        if snap:
+            min_hit = state.rules.critical_roll  # 15.09 : seul un 6 non modifié touche
         attacks = DiceExpr(w.attacks.n_dice, w.attacks.sides, w.attacks.flat + extra_attacks) if extra_attacks else w.attacks
         sustained = w.keyword("sustained hits")
         sustained_value = None
@@ -530,7 +567,7 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit) -> Tuple
                 count=count,
                 hit_modifier=hit_mod,
                 min_unmodified_hit=min_hit,
-                reroll_hits=REROLL_FAILS if (oath and not min_hit) else REROLL_NONE,  # pas de relance en tir indirect
+                reroll_hits=REROLL_FAILS if (oath and not min_hit) else REROLL_NONE,  # pas de relance en tir indirect ni d'opportunité
                 reroll_wounds=REROLL_FAILS if w.has("twin-linked") else REROLL_NONE,
                 lethal_hits=w.has("lethal hits"),
                 sustained_hits=sustained_value,
@@ -538,7 +575,7 @@ def build_shooting_profiles(state: GameState, unit: Unit, target: Unit) -> Tuple
                 critical_wound_on=crit_on,
                 precision=w.has("precision"),
                 label=f"{w.name} ×{count}" + (f" ({hit_mod:+d} touche)" if hit_mod else "") + (" (couvert : CT -1)" if skill_worse else "")
-                      + (f" (indirect : {min_hit}+ non modifié)" if min_hit else ""),
+                      + ((" (tir d'opportunité : 6 non modifié)" if snap else f" (indirect : {min_hit}+ non modifié)") if min_hit else ""),
             )
         )
     return profiles, hazardous_count
@@ -685,8 +722,8 @@ def _resolve_profiles(state: GameState, unit: Unit, target: Unit, profiles: List
     return report
 
 
-def resolve_shooting(state: GameState, unit: Unit, target: Unit) -> CombatReport:
-    profiles, hazardous_count = build_shooting_profiles(state, unit, target)
+def resolve_shooting(state: GameState, unit: Unit, target: Unit, snap: bool = False) -> CombatReport:
+    profiles, hazardous_count = build_shooting_profiles(state, unit, target, snap=snap)
     report = _resolve_profiles(state, unit, target, profiles, "shooting")
     unit.has_shot = True
     unit.last_shot_turn = state.turn_counter  # Hidden (13.09) : a fait des attaques à distance ce tour
@@ -730,7 +767,8 @@ def build_melee_profiles(state: GameState, unit: Unit, target: Unit, fighters: O
         f.has_ability("Excessive Vigour (Aura)") and (f.id == unit.id or unit.min_gap_to(f) <= 6.0) for f in state.units_of(unit.side)
     ):
         ap_bonus = 1  # Excessive Vigour : PA des armes de mêlée améliorée de 1 après une charge
-    groups: Dict[str, int] = defaultdict(int)
+    epic = effect_of(state, "epic_challenge", unit.id) if state.strat_used else None  # Epic Challenge : figurine choisie
+    groups: Dict[Tuple[str, bool], int] = defaultdict(int)
     weapons_by_name: Dict[str, Weapon] = {}
     for m in fighters:
         melee = list(m.melee_weapons)
@@ -742,10 +780,10 @@ def build_melee_profiles(state: GameState, unit: Unit, target: Unit, fighters: O
         chosen = [_choose_profile(main, target)] if main else []
         chosen += extra
         for w in chosen:
-            groups[w.name] += 1
+            groups[(w.name, w.has("precision") or m.id == epic)] += 1
             weapons_by_name[w.name] = w
     profiles = []
-    for name, count in groups.items():
+    for (name, precision), count in groups.items():
         w = weapons_by_name[name]
         sustained = w.keyword("sustained hits")
         sustained_value = None
@@ -770,8 +808,8 @@ def build_melee_profiles(state: GameState, unit: Unit, target: Unit, fighters: O
                 sustained_hits=sustained_value,
                 devastating_wounds=w.has("devastating wounds"),
                 critical_wound_on=crit_on,
-                precision=w.has("precision"),
-                label=f"{w.name} ×{count}",
+                precision=precision,
+                label=f"{w.name} ×{count}" + (" (Epic Challenge)" if precision and not w.has("precision") else ""),
             )
         )
     return profiles
@@ -782,6 +820,26 @@ def resolve_fight(state: GameState, unit: Unit, target: Unit, fighters: Optional
     report = _resolve_profiles(state, unit, target, profiles, "fight", attackers=fighters)
     unit.has_fought = True
     return report
+
+
+def expected_outcome(state: GameState, unit: Unit, target: Unit, kind: str = "shooting") -> Tuple[float, float]:
+    """(dégâts attendus, figurines tuées attendues) d'un tir ou d'un combat de ``unit`` sur ``target`` —
+    aide à la décision affichée dans l'interface (l'excédent de dégâts d'une blessure est perdu)."""
+    from .attack import estimate_models_slain
+
+    if kind in ("shooting", "snap"):
+        profiles, _ = build_shooting_profiles(state, unit, target, snap=kind == "snap")
+    else:
+        profiles = build_melee_profiles(state, unit, target)
+    dfd = defender_of(target)
+    guards = [m for m in target.alive_models if not m.is_leader] or target.alive_models
+    w = guards[0].profile.wounds if guards else 1
+    dmg = models = 0.0
+    for p in profiles:
+        e = expected_attacks(p, dfd, state.rules)
+        dmg += e.damage
+        models += estimate_models_slain(e.unsaved + e.devastating, p.damage, w, dfd.feel_no_pain)
+    return dmg, min(models, float(target.strength))
 
 
 def expected_fight(state: GameState, unit: Unit, target: Unit) -> float:

@@ -2,20 +2,31 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>40kPlayer</title>
 <style>
   :root { --bg:#1e1f22; --panel:#2a2c30; --ink:#e8e6e1; --muted:#9a9890; --att:#c83c3c; --def:#3c6ec8; --accent:#f2c744; --ok:#4caf50; --err:#ff6b6b; }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; display:flex; height:100vh; overflow:hidden; }
-  #boardwrap { flex: 0 0 auto; display:flex; align-items:center; justify-content:center; padding:8px; background:#161719; }
-  canvas { display:block; background:#e8e4da; border-radius:4px; cursor:default; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; display:flex; justify-content:center; height:100vh; overflow:hidden; }
+  #boardwrap { flex: 0 0 auto; display:flex; align-items:center; justify-content:center; padding:8px; background:#161719; position:relative; }
+  canvas { display:block; background:#e8e4da; border-radius:4px; cursor:default; touch-action:none; }
+  #zoombar { position:absolute; right:14px; bottom:14px; display:flex; flex-direction:column; gap:4px; }
+  #zoombar button { width:34px; height:34px; padding:0; font-size:18px; background:rgba(40,42,46,0.85); }
+  #feed { position:absolute; left:16px; top:16px; max-width:min(460px, 70%); display:flex; flex-direction:column; gap:4px; pointer-events:none; }
+  #feed div { background:rgba(20,20,22,0.86); color:#f3efe6; border-left:4px solid var(--accent); padding:5px 8px; border-radius:4px; font-size:12.5px; transition:opacity .8s; white-space:pre-wrap; }
+  #feed div.att { border-left-color:var(--att); } #feed div.def { border-left-color:var(--def); }
+  #feed div.fade { opacity:0; }
+  #replaybar { position:absolute; left:50%; transform:translateX(-50%); bottom:16px; background:rgba(20,20,22,0.9); color:#fff; padding:6px 10px; border-radius:6px; display:none; gap:8px; align-items:center; font-size:13px; max-width:90%; }
+  #replaybar.open { display:flex; }
   #side { flex:1 1 auto; display:flex; flex-direction:column; min-width:380px; max-width:560px; height:100vh; }
   #status { padding:10px 14px; background:var(--panel); border-bottom:1px solid #000; }
   #status h1 { margin:0 0 4px; font-size:16px; font-weight:600; }
   .score { display:flex; gap:14px; font-size:15px; align-items:center; flex-wrap:wrap; }
   .score b.att { color:#ff8a8a; } .score b.def { color:#8ab4ff; }
-  .score label { margin-left:auto; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; }
   #status, #decision, #unitinfo { flex:0 0 auto; }
+  #settings { display:none; padding:8px 14px; background:#26282c; border-bottom:1px solid #000; font-size:12.5px; color:var(--muted); }
+  #settings.open { display:flex; flex-wrap:wrap; gap:6px 16px; }
+  #settings label { display:flex; align-items:center; gap:5px; cursor:pointer; }
   #decision { padding:12px 14px; background:#232529; border-bottom:1px solid #000; min-height:150px; max-height:45vh; overflow:auto; }
   #decision h2 { margin:0 0 6px; font-size:15px; color:var(--accent); }
   #decision .hint { color:var(--muted); font-size:13px; margin-bottom:8px; }
@@ -26,30 +37,40 @@
   button.primary { background:#2f6b3a; border-color:#3f8f4f; }
   button.primary:hover { background:#38804a; }
   button.warn { background:#6b3a2f; border-color:#8f4f3f; }
+  button.strat { background:#3d3170; border-color:#6a58b8; }
+  button.strat:hover { background:#4a3c88; }
   button.active { outline:2px solid var(--accent); }
   button:disabled { opacity:.4; cursor:not-allowed; }
+  button .k { color:var(--muted); font-size:11px; margin-left:4px; }
   #error { color:var(--err); margin-top:6px; min-height:18px; font-size:13px; }
   #extra { color:var(--muted); font-size:12.5px; margin-top:6px; white-space:pre-wrap; }
-  #extra .bad { color:var(--err); }
-  #unitinfo { padding:10px 14px; font-size:13px; color:var(--muted); border-bottom:1px solid #000; min-height:70px; }
+  #extra .bad, #unitinfo .bad { color:var(--err); } #extra .good { color:#9be09b; }
+  #unitinfo { padding:10px 14px; font-size:13px; color:var(--muted); border-bottom:1px solid #000; min-height:70px; max-height:34vh; overflow:auto; }
   #unitinfo b { color:var(--ink); }
+  #unitinfo table { border-collapse:collapse; margin:4px 0; font-size:12px; width:100%; }
+  #unitinfo th { text-align:left; color:var(--muted); font-weight:500; border-bottom:1px solid #444; padding:2px 4px; }
+  #unitinfo td { border-bottom:1px solid #333; padding:2px 4px; color:var(--ink); }
+  #unitinfo details { margin:2px 0; } #unitinfo summary { cursor:pointer; color:var(--ink); }
   #log { flex:1 1 auto; min-height:0; overflow:auto; padding:8px 14px; font: 12.5px/1.45 ui-monospace, Menlo, Consolas, monospace; background:#1a1b1e; }
   #log div { white-space:pre-wrap; }
   #log .round { color:var(--accent); font-weight:700; margin-top:6px; }
   #log .score { color:#9be09b; }
   #log .combat { color:#f0b090; }
+  #log .strat { color:#c6b5ff; font-weight:600; }
   #log .detail { color:#77787a; }
   #log .err { color:var(--err); }
   .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:12px; background:#444; margin-left:6px; }
   .pill.att { background:var(--att); } .pill.def { background:var(--def); }
   kbd { background:#444; border-radius:3px; padding:0 4px; font-size:12px; }
-  #topbar { display:flex; gap:6px; align-items:center; float:right; }
+  #topbar { display:flex; gap:6px; align-items:center; float:right; flex-wrap:wrap; justify-content:flex-end; }
   #topbar a, #topbar button { font-size:12px; padding:3px 8px; }
   a.btnlink { color:var(--ink); text-decoration:none; background:#3a3d44; border:1px solid #555; border-radius:6px; }
   a.btnlink:hover { background:#4a4e57; }
-  #banner { display:none; padding:8px 14px; background:#5a4a1a; color:#fff3c8; font-size:13px; border-bottom:1px solid #000; }
-  #banner.open { display:block; }
-  #banner button { float:right; font-size:12px; padding:1px 7px; margin-left:8px; }
+  #banner, #absence { display:none; padding:8px 14px; background:#5a4a1a; color:#fff3c8; font-size:13px; border-bottom:1px solid #000; }
+  #absence { background:#24405c; color:#dbe9ff; }
+  #banner.open, #absence.open { display:block; }
+  #banner button, #absence button { font-size:12px; padding:1px 7px; margin-left:6px; }
+  #absence .list { max-height:22vh; overflow:auto; margin-top:6px; font-size:12px; color:#c6d8f2; }
   #history { display:none; flex:0 0 auto; max-height:32vh; overflow:auto; background:#202226; border-bottom:1px solid #000; padding:6px 10px; font-size:12.5px; }
   #history.open { display:block; }
   #history .h { display:flex; gap:6px; align-items:center; padding:2px 0; border-bottom:1px solid #2c2e33; }
@@ -57,26 +78,49 @@
   #history .h .w { color:var(--muted); width:118px; flex:0 0 auto; }
   #history .h .l { flex:1 1 auto; }
   #history .h .l.att { color:#ffb0b0; } #history .h .l.def { color:#b0c8ff; }
-  #history .h .l.bot { font-style:italic; }
+  #history .h .l.bot, #history .h .l.auto { font-style:italic; }
   #history .h button { font-size:11px; padding:1px 6px; }
   #history .h button.confirm { background:#8f3f2f; border-color:#c05a45; }
   #history .head { display:flex; justify-content:space-between; align-items:center; color:var(--accent); margin-bottom:4px; }
+  @media (max-width: 900px) {
+    body { flex-direction:column; height:auto; overflow:auto; }
+    #boardwrap { padding:4px; }
+    #side { min-width:0; max-width:none; height:auto; }
+    #decision { max-height:none; }
+    #log { max-height:40vh; }
+    #unitinfo { max-height:none; }
+    button { padding:8px 12px; font-size:14px; }
+  }
 </style>
 </head>
 <body>
-<div id="boardwrap"><canvas id="board"></canvas></div>
+<div id="boardwrap"><canvas id="board"></canvas>
+  <div id="feed"></div>
+  <div id="replaybar"><span id="replaytext"></span><button id="replaystop">Passer</button></div>
+  <div id="zoombar"><button id="zin" title="Zoomer (molette, pincement)">+</button><button id="zout" title="Dézoomer">−</button><button id="zreset" title="Tout le plateau">⤢</button></div>
+</div>
 <div id="side">
   <div id="status">
-    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><button id="delbtn" class="warn" title="Supprimer la partie pour les deux joueurs">Supprimer</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
+    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><button id="setbtn" title="Réglages">Réglages</button><button id="delbtn" class="warn" title="Supprimer la partie pour les deux joueurs">Supprimer</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
     <h1 id="title">40kPlayer</h1>
     <div class="score"><span>Round <b id="round">–</b></span><span>Phase <b id="phase">–</b></span><span id="turn"></span></div>
-    <div class="score"><span><span id="nameA">Attaquant</span> <b class="att" id="scoreA">0</b> VP · <b class="att" id="cpA">0</b> CP</span><span><span id="nameD">Défenseur</span> <b class="def" id="scoreD">0</b> VP · <b class="def" id="cpD">0</b> CP</span>
-      <label id="steplabel"><input type="checkbox" id="stepmode" checked> pas à pas (valider chaque action du bot)</label></div>
+    <div class="score"><span><span id="nameA">Attaquant</span> <b class="att" id="scoreA">0</b> VP · <b class="att" id="cpA">0</b> CP</span><span><span id="nameD">Défenseur</span> <b class="def" id="scoreD">0</b> VP · <b class="def" id="cpD">0</b> CP</span></div>
+  </div>
+  <div id="settings">
+    <label title="Combat avec une seule option, tir vers la seule cible possible, serment à cible unique : joués d’office"><input type="checkbox" id="s_auto"> actions automatiques</label>
+    <label title="Le moteur place tes unités restantes dans ta zone"><input type="checkbox" id="s_deploy"> déploiement automatique</label>
+    <label id="steplabel"><input type="checkbox" id="s_step"> pas à pas (valider chaque action du bot)</label>
+    <label title="Notification du navigateur quand c’est à toi"><input type="checkbox" id="s_notify"> notifications</label>
+    <label title="Te proposer les stratagèmes utilisables (Fire Overwatch, Command Re-roll…) ; décoché : la partie passe sans demander"><input type="checkbox" id="s_strat"> stratagèmes</label>
+    <label><input type="checkbox" id="s_sound"> son</label>
+    <label><input type="checkbox" id="s_anim"> animations</label>
+    <span>Raccourcis : <kbd>Entrée</kbd> valider · <kbd>S</kbd> immobile · <kbd>A</kbd> Advance · <kbd>N</kbd> unité suivante · <kbd>E</kbd> fin de phase · <kbd>R</kbd> pivoter · <kbd>I</kbd> fiche · <kbd>1</kbd>…<kbd>9</kbd> stratagème · <kbd>Ctrl</kbd>+<kbd>Z</kbd> annuler</span>
   </div>
   <div id="banner"></div>
+  <div id="absence"></div>
   <div id="history"></div>
   <div id="decision"><h2 id="dtitle">Connexion…</h2><div class="observe" id="dobs"></div><div class="hint" id="dhint"></div><div class="btns" id="dbtns"></div><div id="extra"></div><div id="error"></div></div>
-  <div id="unitinfo">Survole une figurine pour voir son unité. Pendant un mouvement : glisse une figurine, encadre-en plusieurs à la souris pour les déplacer ensemble, <kbd>Maj</kbd> + glisser déplace toute l’unité, <kbd>R</kbd> / <kbd>Maj</kbd>+<kbd>R</kbd> pivote une coque de 15°, <kbd>Échap</kbd> annule.</div>
+  <div id="unitinfo"></div>
   <div id="log"></div>
 </div>
 <script>
@@ -84,6 +128,7 @@
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const $ = id => document.getElementById(id);
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 let layout = null, S = null, logLen = 0, lastVersion = -1;
 const GID = location.pathname.split('/').filter(Boolean)[1];
@@ -91,12 +136,17 @@ const TOKEN = new URLSearchParams(location.search).get('t') || '';
 const API = '/api/g/' + GID;
 const TQ = TOKEN ? 't=' + encodeURIComponent(TOKEN) : '';
 const withT = (url) => url + (TQ ? (url.includes('?') ? '&' : '?') + TQ : '');
-const view = { timeline: null, seenUndo: null, historyOpen: false, history: [], historyKey: null, confirmAt: null, error: '' };
-let scale = 12, margin = 22;
+const view = { timeline: null, seenUndo: null, historyOpen: false, history: [], historyKey: null, confirmAt: null, error: '',
+               wasMyTurn: false, detailsUnit: null, details: {}, anim: null, replay: null, absenceShown: false };
+let scale = 12, margin = 22, zoom = 1, panX = 0, panY = 0, K = 12;
 const local = { decisionKey: null, pos: {}, orig: {}, kind: 'normal', dragging: null, dragStart: null, shift: false, hover: null, sending: false,
-                selected: new Set(), band: null };
+                selected: new Set(), band: null, pseudo: null, carry: null, wholeUnit: false, check: null, checkSeq: 0, checkTimer: null };
+const prefs = {
+  get(k, d) { try { const v = localStorage.getItem('fortyk.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('fortyk.' + k, JSON.stringify(v)); } catch (e) { /* stockage indisponible */ } },
+};
 
-const HELP = 'Survole une figurine pour voir son unité. Pendant un mouvement : glisse une figurine, encadre-en plusieurs à la souris pour les déplacer ensemble, <kbd>Maj</kbd> + glisser déplace toute l’unité, <kbd>R</kbd> / <kbd>Maj</kbd>+<kbd>R</kbd> pivote une coque de 15° (pivoter ne compte pas dans la distance), <kbd>Échap</kbd> annule.';
+const HELP = 'Glisse une de tes unités pour la déplacer (plus besoin de la choisir d’abord). Encadre plusieurs figurines pour les bouger ensemble, <kbd>Maj</kbd> + glisser (ou « toute l’unité ») déplace toute l’unité, <kbd>R</kbd> / <kbd>Maj</kbd>+<kbd>R</kbd> pivote une coque, <kbd>Échap</kbd> annule le glissement. Clic sur une unité (ou <kbd>I</kbd> en survol) : sa fiche. Molette ou pincement : zoom ; glisser le fond du plateau : se déplacer.';
 const SIDE_FR = { attacker: 'attaquant', defender: 'défenseur' };
 const PHASE_FR = { deployment: 'déploiement', scouts: 'scouts', command: 'commandement', movement: 'mouvement', shooting: 'tir', charge: 'charge', fight: 'combat', end_turn: 'fin de tour', end_battle: 'fin de bataille' };
 const COL = { attacker: '#c83c3c', defender: '#3c6ec8' };
@@ -113,6 +163,7 @@ async function send(payload) {
   try {
     const res = await postJSON(withT(API + '/action'), payload);
     if (!res.ok) { view.error = res.error || 'refusé'; $('error').textContent = view.error; }
+    else markSeen();
   } finally { local.sending = false; }
 }
 async function undo(to) {
@@ -120,36 +171,88 @@ async function undo(to) {
   if (!res.ok) { view.error = res.error || 'annulation refusée'; $('error').textContent = view.error; }
   view.confirmAt = null;
 }
+async function saveSettings(values) {
+  const res = await postJSON(withT(API + '/settings'), values);
+  if (!res.ok) { view.error = res.error || 'réglage refusé'; $('error').textContent = view.error; }
+}
 
+// long-polling : le serveur répond dès que la partie change (ou au bout de 25 s)
 async function poll() {
+  let delay = 0;
   try {
-    const st = await getJSON(withT(API + '/state?since=' + logLen));
+    const wait = lastVersion >= 0 && view.timeline !== null ? `&wait=${lastVersion}` : '';
+    const st = await getJSON(withT(API + '/state?since=' + logLen + wait));
     if (st.ok === false) { gameGone(st); return; }
     if (st.waiting) { view.wasWaiting = true; renderWaiting(st); setTimeout(poll, 2000); return; }
     if (view.wasWaiting) { location.reload(); return; }  // l'adversaire vient de rejoindre : on repart d'un état propre
     if (view.timeline !== null && st.timeline !== view.timeline && logLen > 0) {
       // une annulation a réécrit l'histoire : on repart du journal complet
-      view.timeline = st.timeline; logLen = 0; $('log').innerHTML = ''; lastVersion = -1;
+      view.timeline = st.timeline; logLen = 0; $('log').innerHTML = ''; lastVersion = -1; view.anim = null;
       setTimeout(poll, 0); return;
     }
     view.timeline = st.timeline;
     if (st.version !== lastVersion) {
+      const prev = S;
       lastVersion = st.version;
       S = st;
       view.error = '';
-      appendLog(st.log, st.log_since);
+      appendLog(st.log, st.log_since, prev !== null);
+      startAnimation(prev, st);
       onNewState();
       render();
     }
-  } catch (e) { if (!(e instanceof TypeError && String(e).includes('fetch'))) console.error(e); /* sinon serveur indisponible : on réessaie */ }
-  setTimeout(poll, 300);
+  } catch (e) {
+    if (!(e instanceof TypeError && String(e).includes('fetch'))) console.error(e);
+    delay = 1500;  // serveur indisponible : on réessaie
+  }
+  setTimeout(poll, delay);
 }
 
 // ------------------------------------------------------------ état → UI
 function unitById(id) { return S.units.find(u => u.id === id); }
 function humanTurn() { return S && S.pending && S.pending.side === S.human_side && !S.game_over; }
 const PLACING_KINDS = new Set(['deploy', 'move', 'advance_move', 'charge_move', 'scout', 'disembark']);
-function isPlacing() { const p = S && S.pending; return humanTurn() && p.unit_id && PLACING_KINDS.has(p.kind); }
+function directMovePhase() { const p = S && S.pending; return humanTurn() && p.kind === 'select_unit' && p.phase === 'movement'; }
+function selectableIds() {
+  const p = S.pending; if (!humanTurn()) return new Set();
+  if (p.kind === 'select_unit') return new Set(p.options.filter(o => o.unit_id && !o.embarked_in && !o.stratagem).map(o => o.unit_id));
+  if (p.kind === 'stratagem') return new Set(p.options.filter(o => o.unit_id).map(o => o.unit_id));
+  return new Set();
+}
+// contexte de placement : décision en cours du moteur, ou mouvement direct d'une unité (« quelle unité ? » sauté)
+function place() {
+  if (!humanTurn() || view.replay) return null;
+  const p = S.pending;
+  if (p.unit_id && PLACING_KINDS.has(p.kind)) return { uid: p.unit_id, kind: p.kind, maxd: p.max_distance, pseudo: false };
+  if (local.pseudo && directMovePhase()) { const u = unitById(local.pseudo); return u ? { uid: u.id, kind: 'move', maxd: u.move, pseudo: true } : null; }
+  return null;
+}
+function isPlacing() { return place() !== null; }
+
+function initPlacement(pl) {
+  local.pos = {}; local.orig = {}; local.kind = 'normal'; local.selected = new Set(); local.dragging = null; local.band = null; local.check = null;
+  if (!pl) return;
+  const p = S.pending, u = unitById(pl.uid);
+  const alive = u.models.filter(m => m.alive);
+  if (pl.kind === 'deploy') {
+    const z = layout.deployment_zones[u.side];
+    let cx = z.reduce((a, v) => a + v[0], 0) / z.length, cy = z.reduce((a, v) => a + v[1], 0) / z.length;
+    const cands = p.options.filter(o => o.x !== undefined);  // parmi les positions légales proposées, la plus proche du centre
+    if (cands.length) { const best = cands.reduce((a, o) => Math.hypot(o.x - cx, o.y - cy) < Math.hypot(a.x - cx, a.y - cy) ? o : a); cx = best.x; cy = best.y; }
+    const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length;
+    alive.forEach(m => { local.pos[m.id] = withAngle(m, [cx + m.x - mx, cy + m.y - my]); });
+    alive.forEach(m => { local.orig[m.id] = [...local.pos[m.id]]; });
+  } else if (pl.kind === 'disembark') {
+    local.proposal = 0; applyProposal(u, 0);
+  } else {
+    alive.forEach(m => { local.pos[m.id] = withAngle(m, [m.x, m.y]); local.orig[m.id] = [...local.pos[m.id]]; });
+    // Advance déclarée depuis un mouvement direct : on garde le placement déjà glissé
+    if (pl.kind === 'advance_move' && local.carry && local.carry.uid === pl.uid) Object.assign(local.pos, local.carry.pos);
+  }
+  local.carry = null;
+  if (pl.kind === 'advance_move') local.kind = 'advance_move';
+  if (pl.kind === 'charge_move') local.kind = 'charge';
+}
 
 function onNewState() {
   const p = S.pending;
@@ -157,36 +260,15 @@ function onNewState() {
     const hu = unitById(local.hover.u.id); const hm = hu && hu.models.find(q => q.id === local.hover.m.id);
     local.hover = hm && hm.alive && (hu.deployed || (p && p.unit_id === hu.id)) ? { u: hu, m: hm } : null;
   }
-  const key = p ? [p.kind, p.unit_id, S.battle_round, S.phase, S.log_length].join('|') : null;
-  if (p && key !== local.decisionKey) {
-    local.decisionKey = key;
-    local.pos = {}; local.orig = {}; local.kind = 'normal'; local.selected = new Set(); local.dragging = null; local.band = null;
-    if (p.unit_id && PLACING_KINDS.has(p.kind)) {
-      const u = unitById(p.unit_id);
-      const alive = u.models.filter(m => m.alive);
-      if (p.kind === 'deploy') {
-        const z = layout.deployment_zones[u.side];
-        let cx = z.reduce((a, v) => a + v[0], 0) / z.length, cy = z.reduce((a, v) => a + v[1], 0) / z.length;
-        // parmi les positions légales proposées, la plus proche du centre de la zone
-        const cands = p.options.filter(o => o.x !== undefined);
-        if (cands.length) { const zc = [cx, cy]; const best = cands.reduce((a, o) => Math.hypot(o.x - zc[0], o.y - zc[1]) < Math.hypot(a.x - zc[0], a.y - zc[1]) ? o : a); cx = best.x; cy = best.y; }
-        const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length;
-        alive.forEach(m => { local.pos[m.id] = withAngle(m, [cx + m.x - mx, cy + m.y - my]); });
-      } else if (p.kind === 'disembark') {
-        local.proposal = 0;
-        applyProposal(u, 0);
-      } else {
-        alive.forEach(m => { local.pos[m.id] = withAngle(m, [m.x, m.y]); });
-      }
-      alive.forEach(m => { local.orig[m.id] = [...local.pos[m.id]]; });
-      if (p.kind === 'advance_move') local.kind = 'advance_move';
-      if (p.kind === 'charge_move') local.kind = 'charge';
-    }
-  }
-  if (!p) local.decisionKey = null;
-  $('stepmode').checked = !!S.step_mode;
-  renderStatus(); renderDecision(); renderBanner(); refreshHistory();
-  rememberGame();
+  if (local.pseudo && !(directMovePhase() && selectableIds().has(local.pseudo))) local.pseudo = null;
+  const pl = place();
+  const key = p ? [p.kind, p.unit_id, S.battle_round, S.phase, S.log_length, pl ? pl.uid : ''].join('|') : null;
+  if (key !== local.decisionKey) { local.decisionKey = key; initPlacement(pl); }
+  const st = S.settings || {};
+  $('s_auto').checked = !!st.auto_actions; $('s_deploy').checked = !!st.auto_deploy; $('s_step').checked = !!st.step_mode; $('s_strat').checked = st.stratagems !== false;
+  renderStatus(); renderDecision(); renderBanner(); refreshHistory(); renderUnitInfo();
+  rememberGame(); notifyTurn(); checkAbsence();
+  if (document.visibilityState === 'visible') markSeen();
 }
 
 // ------------------------------------------------------------ empreintes (rond, ovale, coque)
@@ -194,16 +276,24 @@ function onNewState() {
 // socle rond (hx = hy = 0), ovale (hy = 0), coque de véhicule (r = 0).
 const isRound = m => !(m.hx > 0 || m.hy > 0);
 function withAngle(m, xy) { return isRound(m) ? xy : [xy[0], xy[1], m.a || 0]; }
-function poseOf(u, m) {
-  if (S.pending && S.pending.unit_id === u.id && local.pos[m.id]) { const p = local.pos[m.id]; return [p[0], p[1], p.length > 2 ? p[2] : (m.a || 0)]; }
+function livePose(u, m) {
+  if (view.replay && view.replay.pos[m.id]) return view.replay.pos[m.id];
+  const pl = place();
+  if (pl && pl.uid === u.id && local.pos[m.id]) { const p = local.pos[m.id]; return [p[0], p[1], p.length > 2 ? p[2] : (m.a || 0)]; }
+  const a = view.anim && view.anim.from[m.id];
+  if (a) {
+    const t = Math.min(1, (performance.now() - view.anim.t0) / view.anim.dur), e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    return [a[0] + (m.x - a[0]) * e, a[1] + (m.y - a[1]) * e, (a[2] || 0) + angDelta(a[2] || 0, m.a || 0) * e];
+  }
   return [m.x, m.y, m.a || 0];
 }
+const poseOf = livePose;
+function modelPos(u, m) { const q = livePose(u, m); return [q[0], q[1]]; }
 function shapePath(m, x, y, a, grow) {
-  // chemin canvas de l'empreinte posée en (x, y, a), élargie de ``grow`` pouces
-  const R = (m.r + (grow || 0)) * scale;
+  const R = (m.r + (grow || 0)) * K;
   ctx.beginPath();
   if (isRound(m)) { ctx.arc(X(x), Y(y), Math.max(R, 0.5), 0, Math.PI * 2); return; }
-  const hx = m.hx * scale, hy = m.hy * scale, c = Math.cos(a), s = Math.sin(a);
+  const hx = m.hx * K, hy = m.hy * K, c = Math.cos(a), s = Math.sin(a);
   const P = (lx, ly) => [X(x) + lx * c - ly * s, Y(y) + lx * s + ly * c];
   const corners = [[hx, hy, 0], [-hx, hy, Math.PI / 2], [-hx, -hy, Math.PI], [hx, -hy, 1.5 * Math.PI]];
   let first = true;
@@ -224,17 +314,13 @@ function inShape(m, x, y, a, bx, by, tol) {
 }
 function innerSize(m) { return m.r + (m.hy || 0); }
 function angDelta(a0, a1) { const d = a1 - a0; return Math.atan2(Math.sin(d), Math.cos(d)); }
-function moveDist(m, o, n) {
-  // V11 (03.01) : on mesure depuis le même point du socle, pivoter ne compte pas → déplacement du centre
-  return Math.hypot(n[0] - o[0], n[1] - o[1]);
-}
+function moveDist(m, o, n) { return Math.hypot(n[0] - o[0], n[1] - o[1]); }  // V11 (03.01) : pivoter ne compte pas
 
 // débarquement : placements proposés par le moteur (couronnes autour de la coque, formations)
 function disembarkProposals() { return (S.pending.options || []).filter(o => o.disembark && !o.stay); }
 function applyProposal(u, k) {
   const props = disembarkProposals(); const alive = u.models.filter(m => m.alive);
   if (!props.length) {
-    // aucune place légale proposée : on pose la formation à côté du transport, à placer à la main
     const t = unitById(S.pending.target_id).models.find(m => m.alive) || unitById(S.pending.target_id).models[0];
     const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length;
     const off = (t.hx || 0) + (t.hy || 0) + t.r + 1.5;
@@ -263,17 +349,29 @@ function renderStatus() {
   } else $('title').innerHTML = `${title} <span class="pill">spectateur</span>`;
   $('turn').textContent = S.game_over ? 'partie terminée' : (S.battle_round ? `tour : ${SIDE_FR[S.side_to_move]}` : '');
   $('steplabel').style.display = (S.vs_bot && me) ? '' : 'none';
-  $('undobtn').style.display = me ? '' : 'none';
-  $('delbtn').style.display = me ? '' : 'none';
+  ['undobtn', 'delbtn'].forEach(id => { $(id).style.display = me ? '' : 'none'; });
   $('histbtn').style.display = '';
   $('undobtn').disabled = !S.can_undo;
   $('histbtn').textContent = `Historique (${S.history_length || 0})`;
   document.title = (humanTurn() ? '● À toi — ' : '') + ((S.game && S.game.title) || '40kPlayer');
 }
 
-function btn(label, onclick, cls) { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = onclick; return b; }
-
+function btn(label, onclick, cls, key) {
+  const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = onclick;
+  if (key) { b.dataset.key = key; const k = document.createElement('span'); k.className = 'k'; k.textContent = key; b.appendChild(k); }
+  return b;
+}
 function moveKindForSend(u) { return u.flags.engaged ? (u.flags.battle_shocked ? 'desperate' : 'fall_back') : (local.kind === 'advance_move' ? 'advance_move' : 'normal'); }
+function expectTxt(o) { return o.expected_damage !== undefined ? ` — ~${o.expected_damage} dégâts` + (o.expected_models >= 0.1 ? `, ~${o.expected_models} fig.` : '') : ''; }
+function autoDeployButton(box) {
+  if (S.phase === 'deployment' && S.settings && !S.settings.auto_deploy) box.appendChild(btn('Déployer automatiquement mes unités restantes', () => saveSettings({ auto_deploy: true })));
+}
+function placementTools(box, u) {
+  box.appendChild(btn(local.wholeUnit ? 'Glisser : toute l’unité ✓' : 'Glisser : une figurine', () => { local.wholeUnit = !local.wholeUnit; renderDecision(); }));
+  if (u.models.some(m => m.alive && !isRound(m))) {
+    box.appendChild(btn('⟲ 15°', () => rotateSelection(-1))); box.appendChild(btn('⟳ 15°', () => rotateSelection(1)));
+  }
+}
 
 function renderDecision() {
   const box = $('dbtns'); box.innerHTML = ''; $('extra').innerHTML = ''; $('dobs').textContent = '';
@@ -291,61 +389,96 @@ function renderDecision() {
   const p = S.pending;
   if (!p || p.side !== S.human_side) {
     const who = p && S.players && S.players[p.side];
-    $('dtitle').textContent = who ? `${who.name} (${SIDE_FR[p.side]}) joue…` : 'L’adversaire joue…';
+    $('dtitle').textContent = who ? `${who.name} (${SIDE_FR[p.side]}) ${p.kind === 'stratagem' ? 'réfléchit à un stratagème…' : 'joue…'}` : 'L’adversaire joue…';
     if (!S.human_side) $('dhint').textContent = 'Tu regardes la partie (lien de spectateur) : le plateau et le journal se mettent à jour en direct.';
     else if (S.vs_bot) $('dhint').textContent = S.step_mode ? 'Chaque action du bot s’arrêtera ici pour que tu la valides.' : 'Le journal défile en bas à mesure de ses actions.';
-    else $('dhint').textContent = 'Le plateau et le journal se mettent à jour à chacune de ses actions. Tu peux fermer la page : la partie est sauvegardée, ton lien la rouvre.';
+    else $('dhint').textContent = 'Le plateau se met à jour à chacune de ses actions. Tu peux fermer la page : la partie est sauvegardée, ton lien la rouvre (et une notification te prévient si tu l’as activée dans les réglages).';
     return;
   }
-  const u = p.unit_id ? unitById(p.unit_id) : null;
+  const pl = place();
+  const u = pl ? unitById(pl.uid) : (p.unit_id ? unitById(p.unit_id) : null);
   const uname = u ? `${u.name} [${u.id}]` : '';
-  if (p.kind === 'observe') {
+  if (pl && pl.pseudo) {
+    // mouvement direct : l'unité est glissée sans avoir été choisie d'abord
+    const eng = u.flags.engaged;
+    $('dtitle').textContent = `Mouvement : ${uname} — M ${u.move}"`;
+    $('dhint').innerHTML = eng ? 'Unité engagée : reste immobile ou replie-toi (glisse hors de la portée d’engagement, puis valide).' : 'Glisse les figurines puis valide (ou Advance : le D6 est lancé, tu gardes ce placement). <kbd>N</kbd> passe à l’unité suivante.';
+    box.appendChild(btn(eng ? 'Valider le repli' : 'Valider le déplacement', () => send({ type: 'model_move', unit_id: u.id, kind: moveKindForSend(u), positions: local.pos }), 'primary', '↵'));
+    if (!eng) box.appendChild(btn('Advance', () => { local.carry = { uid: u.id, pos: JSON.parse(JSON.stringify(local.pos)) }; send({ type: 'declare_advance', unit_id: u.id }); }, '', 'A'));
+    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id }), '', 'S'));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+    box.appendChild(btn('Autre unité', () => { local.pseudo = null; local.decisionKey = null; onNewState(); render(); }));
+    placementTools(box, u);
+    const end = p.options.find(o => o.end_phase);
+    if (end) box.appendChild(btn('Terminer la phase', () => send({ type: 'end_phase' }), 'warn', 'E'));
+    updateMoveExtra();
+    return;
+  }
+  if (p.kind === 'stratagem') {
+    const first = p.options.find(o => o.stratagem);
+    $('dtitle').textContent = `Stratagème ? ${first ? first.name : ''} — tu as ${S.cp ? S.cp[S.human_side] : '?'} CP`;
+    $('dhint').textContent = p.note || '';
+    let k = 0;
+    p.options.forEach(o => {
+      if (o.pass) box.appendChild(btn('Non, continuer', () => send({ type: 'option', index: o.index }), 'warn', 'S'));
+      else { k += 1; box.appendChild(btn(o.label + expectTxt(o), () => send({ type: 'option', index: o.index }), 'strat', k <= 9 ? String(k) : null)); }
+    });
+    $('extra').innerHTML = 'Rien à faire ? <kbd>S</kbd> ou « Non, continuer ». Tu peux couper ces propositions dans les réglages.';
+  } else if (p.kind === 'observe') {
     $('dtitle').textContent = `Adversaire — ${PHASE_FR[p.phase] || p.phase}`;
     $('dobs').textContent = p.note;
-    $('dhint').innerHTML = 'Regarde le plateau et le journal, puis <kbd>Continuer</kbd> (ou <kbd>Espace</kbd>). C’est ici que viendront les stratagèmes réactifs.';
-    box.appendChild(btn('Continuer', () => send({ type: 'continue' }), 'primary'));
+    $('dhint').innerHTML = 'Regarde le plateau et le journal, puis <kbd>Continuer</kbd> (ou <kbd>Espace</kbd>).';
+    box.appendChild(btn('Continuer', () => send({ type: 'continue' }), 'primary', '↵'));
   } else if (p.kind === 'select_unit') {
     const ph = PHASE_FR[p.phase] || p.phase;
     $('dtitle').textContent = `${ph.charAt(0).toUpperCase() + ph.slice(1)} : quelle unité ?`;
-    $('dhint').textContent = 'Clique sur une de tes unités sur le plateau, ou sur son bouton. Tu choisis l’ordre.';
+    $('dhint').textContent = p.phase === 'movement' ? 'Glisse directement une de tes unités sur le plateau (ou clique-la), ou choisis-la ci-dessous. Tu choisis l’ordre.' : 'Clique sur une de tes unités sur le plateau, ou sur son bouton. Tu choisis l’ordre.';
     p.options.forEach(o => {
-      if (o.end_phase) box.appendChild(btn(p.phase === 'movement' ? 'Terminer la phase (les autres restent immobiles)' : 'Terminer la phase', () => send({ type: 'end_phase' }), 'warn'));
+      if (o.end_phase) box.appendChild(btn(p.phase === 'movement' ? 'Terminer la phase (les autres restent immobiles)' : 'Terminer la phase', () => send({ type: 'end_phase' }), 'warn', 'E'));
+      else if (o.stratagem) box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }), 'strat'));
       else box.appendChild(btn(o.label, () => send({ type: 'select_unit', unit_id: o.unit_id })));
     });
+    if (p.phase === 'deployment') autoDeployButton(box);
+    if (p.phase === 'movement') box.appendChild(btn(local.wholeUnit ? 'Glisser : toute l’unité ✓' : 'Glisser : une figurine', () => { local.wholeUnit = !local.wholeUnit; renderDecision(); }));
     const inel = Object.entries(p.ineligible || {});
-    if (inel.length) $('extra').innerHTML = inel.map(([id, v]) => `<span class="bad">${v.name} [${id}]</span> : ${v.reason}`).join('<br>');
+    if (inel.length) $('extra').innerHTML = inel.map(([id, v]) => `<span class="bad">${esc(v.name)} [${id}]</span> : ${esc(v.reason)}`).join('<br>');
   } else if (p.kind === 'deploy') {
     $('dtitle').textContent = `Déploiement : ${uname}`;
-    $('dhint').innerHTML = 'Glisse chaque figurine, encadre-en plusieurs pour les bouger ensemble, <kbd>Maj</kbd> + glisser pour toute l’unité. Tout le socle dans ta zone ; cohérence 2" / 9".';
-    box.appendChild(btn('Valider le déploiement', () => send({ type: 'deploy_models', unit_id: u.id, positions: local.pos }), 'primary'));
+    $('dhint').innerHTML = 'Glisse les figurines (ou toute l’unité), tout le socle dans ta zone ; cohérence 2" / 9". Le socle devient rouge si le placement est refusé.';
+    box.appendChild(btn('Valider le déploiement', () => send({ type: 'deploy_models', unit_id: u.id, positions: local.pos }), 'primary', '↵'));
     p.options.filter(o => o.embark && o.transport_id).forEach(o => box.appendChild(btn(`Commencer à bord : ${o.label.replace('Embarquer dans ', '')}`, () => send({ type: 'option', index: o.index }))));
     box.appendChild(btn('Réinitialiser', resetLocal));
+    placementTools(box, u);
+    autoDeployButton(box);
+    updateMoveExtra();
   } else if (p.kind === 'move') {
     $('dtitle').textContent = `Mouvement : ${uname} — M ${u.move}"`;
     const eng = u.flags.engaged;
     $('dhint').innerHTML = eng ? (u.flags.battle_shocked ? 'Unité engagée et battle-shocked : Desperate Escape (un jet de danger par figurine, tu peux traverser l’ennemi) ou reste immobile.' : 'Unité engagée : reste immobile ou replie-toi sans traverser l’ennemi (glisse hors de la portée d’engagement, puis valide).')
-      : 'Chaque figurine ≤ M (pivoter ne compte pas) ; on traverse ses propres figurines mais pas les socles ennemis (un monstre / véhicule passe sur l’infanterie) ; on peut passer à 2" d’un ennemi mais pas y finir. <kbd>Échap</kbd> annule le glissement en cours.';
-    if (!eng) box.appendChild(btn('Advance (lancer le D6)', () => send({ type: 'declare_advance', unit_id: u.id })));
-    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id })));
-    box.appendChild(btn(eng ? 'Valider le repli' : 'Valider le déplacement', () => send({ type: 'model_move', unit_id: u.id, kind: moveKindForSend(u), positions: local.pos }), 'primary'));
+      : 'Chaque figurine ≤ M (pivoter ne compte pas) ; on traverse ses propres figurines mais pas les socles ennemis ; on peut passer à 2" d’un ennemi mais pas y finir.';
+    box.appendChild(btn(eng ? 'Valider le repli' : 'Valider le déplacement', () => send({ type: 'model_move', unit_id: u.id, kind: moveKindForSend(u), positions: local.pos }), 'primary', '↵'));
+    if (!eng) box.appendChild(btn('Advance (lancer le D6)', () => { local.carry = { uid: u.id, pos: JSON.parse(JSON.stringify(local.pos)) }; send({ type: 'declare_advance', unit_id: u.id }); }, '', 'A'));
+    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id }), '', 'S'));
     box.appendChild(btn('Réinitialiser', resetLocal));
+    placementTools(box, u);
     updateMoveExtra();
   } else if (p.kind === 'advance_move') {
     $('dtitle').textContent = `Advance : ${uname} — jusqu’à ${p.max_distance}" par figurine`;
     $('dhint').textContent = 'Le D6 est lancé (voir le journal). Place tes figurines puis valide. Après une Advance, seules les armes Assault tirent (ou Thrill Seekers) et pas de charge.';
-    box.appendChild(btn('Valider', () => send({ type: 'model_move', unit_id: u.id, kind: 'advance_move', positions: local.pos }), 'primary'));
-    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id })));
+    box.appendChild(btn('Valider', () => send({ type: 'model_move', unit_id: u.id, kind: 'advance_move', positions: local.pos }), 'primary', '↵'));
+    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id }), '', 'S'));
     box.appendChild(btn('Réinitialiser', resetLocal));
+    placementTools(box, u);
     updateMoveExtra();
   } else if (p.kind === 'shoot') {
     $('dtitle').textContent = 'Tir : ' + uname;
-    $('dhint').textContent = 'Choisis la cible (bouton ou clic sur l’unité ennemie). Toutes les armes éligibles tirent dessus. Une unité engagée avec une de tes unités ne peut pas être visée (sauf pistolets de l’unité engagée) ; une unité Hidden (infanterie dont chaque figurine touche un décor) n’est ciblable qu’à 15" ou moins.';
+    $('dhint').textContent = 'Choisis la cible (bouton ou clic sur l’unité ennemie) : dégâts et pertes attendus indiqués. Une unité engagée avec une de tes unités ne peut pas être visée ; une figurine cachée (décor dense) n’est visible qu’à 15".';
     const notes = [];
     p.options.forEach(o => {
       if (o.target_id === null || o.target_id === undefined) box.appendChild(btn('Ne pas tirer', () => send({ type: 'option', index: o.index }), 'warn'));
       else {
-        box.appendChild(btn(`${o.label} [${o.target_id}] — ${o.distance}"` + (o.hidden ? ' — Hidden (≤ 15")' : ''), () => send({ type: 'option', index: o.index })));
-        if (o.outside_terrain && o.outside_terrain.length) notes.push(`<span class="bad">${o.target_id}</span> n’est pas Hidden : ${o.outside_terrain.join(', ')} ne ${o.outside_terrain.length > 1 ? 'touchent' : 'touche'} aucun décor (en orange).`);
+        box.appendChild(btn(`${o.label} [${o.target_id}] — ${o.distance}"` + (o.hidden ? ' — Hidden (≤ 15")' : '') + expectTxt(o), () => send({ type: 'option', index: o.index })));
+        if (o.outside_terrain && o.outside_terrain.length) notes.push(`<span class="bad">${o.target_id}</span> n’est pas Hidden : ${o.outside_terrain.join(', ')} ne ${o.outside_terrain.length > 1 ? 'touchent' : 'touche'} aucun décor dense (en orange).`);
       }
     });
     if (notes.length) $('extra').innerHTML = notes.join('<br>');
@@ -353,8 +486,8 @@ function renderDecision() {
     $('dtitle').textContent = 'Charge : ' + uname;
     $('dhint').textContent = 'Déclare la charge : 2D6, puis tu choisis parmi les unités atteignables socle à socle (double 1 = échec). ' + (p.note || '');
     p.options.forEach(o => {
-      if (o.declare_charge) box.appendChild(btn(o.label, () => send({ type: 'declare_charge', unit_id: u.id }), 'primary'));
-      else box.appendChild(btn('Ne pas charger', () => send({ type: 'option', index: o.index }), 'warn'));
+      if (o.declare_charge) box.appendChild(btn(o.label, () => send({ type: 'declare_charge', unit_id: u.id }), 'primary', '↵'));
+      else box.appendChild(btn('Ne pas charger', () => send({ type: 'option', index: o.index }), 'warn', 'S'));
     });
   } else if (p.kind === 'charge_target') {
     $('dtitle').textContent = `Charge : ${uname} — jet ${p.max_distance}`;
@@ -363,30 +496,33 @@ function renderDecision() {
   } else if (p.kind === 'charge_move') {
     const tids = (p.targets && p.targets.length) ? p.targets : [p.target_id];
     $('dtitle').textContent = `Charge : ${uname} → ${tids.map(id => `${unitById(id).name} [${id}]`).join(' + ')} — jet ${p.max_distance}`;
-    $('dhint').textContent = 'Place tes figurines (≤ jet chacune) : au moins une socle à socle avec une cible, l’unité engagée (2") avec chaque cible ; celles qui peuvent arriver à 1" (anneau) doivent le faire, sinon à 2", sinon finir plus près ; pas de figurine à 2" d’une autre unité ennemie ; on ne traverse pas les socles ennemis ; cohérence.';
-    box.appendChild(btn('Valider la charge', () => send({ type: 'model_move', unit_id: u.id, kind: 'charge', positions: local.pos }), 'primary'));
-    box.appendChild(btn('Placement automatique', () => send({ type: 'auto_charge', unit_id: u.id })));
+    $('dhint').textContent = 'Place tes figurines (≤ jet chacune) : au moins une socle à socle avec une cible, l’unité engagée (2") avec chaque cible ; celles qui peuvent arriver à 1" doivent le faire, sinon à 2", sinon finir plus près ; pas à 2" d’une autre unité ennemie ; cohérence. Ou laisse le moteur placer.';
+    box.appendChild(btn('Placement automatique', () => send({ type: 'auto_charge', unit_id: u.id }), 'primary', 'A'));
+    box.appendChild(btn('Valider la charge', () => send({ type: 'model_move', unit_id: u.id, kind: 'charge', positions: local.pos }), '', '↵'));
     box.appendChild(btn('Réinitialiser', resetLocal));
+    placementTools(box, u);
     updateMoveExtra();
   } else if (p.kind === 'fight') {
     $('dtitle').textContent = 'Combat : quelle unité active-t-on ?';
-    $('dhint').textContent = 'Pile-in 3", attaques des figurines à 2" de l’ennemi, consolidation 3" — le moteur s’occupe des déplacements.';
-    p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }))));
+    $('dhint').textContent = 'Pile-in, attaques des figurines à 2" de l’ennemi, consolidation : le moteur s’occupe des déplacements. Dégâts attendus indiqués.';
+    p.options.forEach(o => box.appendChild(btn(o.label + expectTxt(o), () => send({ type: 'option', index: o.index }))));
   } else if (p.kind === 'scout') {
     $('dtitle').textContent = `Scouts : ${uname} — jusqu’à ${p.max_distance}"`;
-    $('dhint').textContent = `Avant le round 1 : mouvement normal de ${p.max_distance}" au plus par figurine, à finir à plus de 9" de toute figurine ennemie.`;
-    box.appendChild(btn('Valider le mouvement de scout', () => send({ type: 'model_move', unit_id: u.id, kind: 'scout', positions: local.pos }), 'primary'));
-    box.appendChild(btn('Pas de mouvement de scout', () => send({ type: 'stationary', unit_id: u.id })));
+    $('dhint').textContent = `Avant le round 1 : mouvement de ${p.max_distance}" au plus par figurine, à finir à plus de 8" de toute figurine ennemie.`;
+    box.appendChild(btn('Valider le mouvement de scout', () => send({ type: 'model_move', unit_id: u.id, kind: 'scout', positions: local.pos }), 'primary', '↵'));
+    box.appendChild(btn('Pas de mouvement de scout', () => send({ type: 'stationary', unit_id: u.id }), '', 'S'));
     box.appendChild(btn('Réinitialiser', resetLocal));
+    placementTools(box, u);
     updateMoveExtra();
   } else if (p.kind === 'disembark') {
     $('dtitle').textContent = `Débarquer : ${uname} de ${p.target_id}`;
     $('dhint').textContent = (p.note || '') + '. Déplace les figurines si tu veux, puis valide.';
     const stay = p.options.find(o => o.stay);
-    box.appendChild(btn('Débarquer ici', () => send({ type: 'disembark_models', unit_id: u.id, positions: local.pos }), 'primary'));
-    if (disembarkProposals().length > 1) box.appendChild(btn('Autre placement proposé', () => { local.proposal = (local.proposal || 0) + 1; applyProposal(u, local.proposal); render(); }));
-    if (stay) box.appendChild(btn('Rester à bord', () => send({ type: 'option', index: stay.index }), 'warn'));
-    if (!disembarkProposals().length) $('extra').textContent = `Aucune place libre proposée à ${p.max_distance}" du transport (tout est occupé ou à portée d’engagement) : place les figurines à la main, ou reste à bord.`;
+    box.appendChild(btn('Débarquer ici', () => send({ type: 'disembark_models', unit_id: u.id, positions: local.pos }), 'primary', '↵'));
+    if (disembarkProposals().length > 1) box.appendChild(btn('Autre placement proposé', () => { local.proposal = (local.proposal || 0) + 1; applyProposal(u, local.proposal); render(); scheduleCheck(); }));
+    if (stay) box.appendChild(btn('Rester à bord', () => send({ type: 'option', index: stay.index }), 'warn', 'S'));
+    placementTools(box, u);
+    if (!disembarkProposals().length) $('extra').textContent = `Aucune place libre proposée à ${p.max_distance}" du transport : place les figurines à la main, ou reste à bord.`;
   } else if (p.kind === 'embark') {
     $('dtitle').textContent = `Embarquer : ${uname} ?`;
     $('dhint').textContent = p.note || '';
@@ -396,70 +532,245 @@ function renderDecision() {
     $('dhint').textContent = 'Relance des touches contre cette unité jusqu’à ta prochaine phase de commandement.';
     p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }))));
   } else {
-    $('dtitle').textContent = p.kind; $('dhint').textContent = '';
+    $('dtitle').textContent = p.kind; $('dhint').textContent = p.note || '';
     p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }))));
   }
 }
 
 function updateMoveExtra() {
-  const p = S.pending; if (!p || !p.max_distance || p.kind === 'disembark') return;
+  const pl = place(); if (!pl) return;
   const lines = [];
-  const u = unitById(p.unit_id);
-  for (const [mid, o] of Object.entries(local.orig)) {
-    const m = u.models.find(q => q.id === mid); const n = local.pos[mid]; const d = moveDist(m, o, n);
-    if (d > 0.05) lines.push(`${mid} : ${d.toFixed(1)}" / ${p.max_distance}"` + (d > p.max_distance + 1e-6 ? ' — trop loin' : ''));
+  const u = unitById(pl.uid);
+  if (pl.maxd && pl.kind !== 'disembark' && pl.kind !== 'deploy') {
+    for (const [mid, o] of Object.entries(local.orig)) {
+      const m = u.models.find(q => q.id === mid); const n = local.pos[mid]; const d = moveDist(m, o, n);
+      if (d > 0.05) lines.push(`${mid} : ${d.toFixed(1)}" / ${pl.maxd}"` + (d > pl.maxd + 1e-6 ? ' — trop loin' : ''));
+    }
   }
-  $('extra').innerHTML = lines.length ? lines.map(l => l.includes('trop loin') ? `<span class="bad">${l}</span>` : l).join('<br>') : 'Aucune figurine déplacée.';
+  const c = local.check;
+  let html = lines.length ? lines.map(l => l.includes('trop loin') ? `<span class="bad">${l}</span>` : l).join('<br>') : (pl.kind === 'deploy' ? '' : 'Aucune figurine déplacée.');
+  if (c && !c.pending) html = (c.ok ? '<span class="good">✓ placement légal</span>' : `<span class="bad">✗ ${esc(c.error)}</span>`) + (html ? '<br>' + html : '');
+  $('extra').innerHTML = html;
 }
 
-function resetLocal() { for (const k in local.orig) local.pos[k] = [...local.orig[k]]; local.selected = new Set(); render(); if (S.pending && S.pending.max_distance) updateMoveExtra(); }
+// ------------------------------------------------------------ vérification en direct (dry-run côté serveur)
+function currentPayload() {
+  const pl = place(); if (!pl) return null;
+  const u = unitById(pl.uid);
+  if (pl.kind === 'deploy') return { type: 'deploy_models', unit_id: u.id, positions: local.pos };
+  if (pl.kind === 'disembark') return { type: 'disembark_models', unit_id: u.id, positions: local.pos };
+  if (pl.kind === 'charge_move') return { type: 'model_move', unit_id: u.id, kind: 'charge', positions: local.pos };
+  if (pl.kind === 'scout') return { type: 'model_move', unit_id: u.id, kind: 'scout', positions: local.pos };
+  if (pl.kind === 'advance_move') return { type: 'model_move', unit_id: u.id, kind: 'advance_move', positions: local.pos };
+  return { type: 'model_move', unit_id: u.id, kind: moveKindForSend(u), positions: local.pos };
+}
+function scheduleCheck() {
+  clearTimeout(local.checkTimer);
+  local.checkTimer = setTimeout(async () => {
+    const pl = place(); const payload = currentPayload(); if (!pl || !payload) return;
+    const moved = Object.entries(local.orig).some(([k, o]) => moveDist(null, o, local.pos[k]) > 0.02) || pl.kind === 'deploy' || pl.kind === 'disembark';
+    if (!moved) { local.check = null; updateMoveExtra(); render(); return; }
+    const seq = ++local.checkSeq;
+    try {
+      const res = await postJSON(withT(API + '/check'), payload);
+      if (seq !== local.checkSeq) return;  // réponse périmée : une vérification plus récente est partie
+      local.check = res; updateMoveExtra(); render();
+    } catch (e) { /* hors ligne : on validera au clic */ }
+  }, 140);
+}
 
-// ------------------------------------------------------------ journal
-function appendLog(lines, since) {
+function hasMoved() { return Object.entries(local.orig).some(([k, o]) => local.pos[k] && (moveDist(null, o, local.pos[k]) > 0.02 || (o.length > 2 && Math.abs(angDelta(o[2], local.pos[k][2])) > 0.01))); }
+function resetLocal() { for (const k in local.orig) local.pos[k] = [...local.orig[k]]; local.selected = new Set(); local.check = null; render(); updateMoveExtra(); }
+
+// ------------------------------------------------------------ journal et fil d'événements
+function lineClass(line) {
+  if (line.startsWith('=====')) return 'round';
+  if (line.startsWith('Score') || line.startsWith('Fin de bataille') || line.startsWith('RÉSULTAT')) return 'score';
+  if (line.startsWith('Tir') || line.startsWith('Combat') || line.startsWith('Charge')) return 'combat';
+  if (line.startsWith('Stratagème')) return 'strat';
+  if (line.startsWith('      ')) return 'detail';
+  if (line.startsWith('ERREUR')) return 'err';
+  return '';
+}
+const FEED_RE = /^(Tir|Combat|Charge|Score|Battle-shock|Deadly Demise|Fin de bataille|RÉSULTAT|Hazardous|Desperate|Transport|Stratagème)|Advance de|jets? de danger|lance 2D6|D6 = /;
+function appendLog(lines, since, live) {
   if (since === 0 && logLen > 0) { $('log').innerHTML = ''; }
   const box = $('log');
   lines.forEach(line => {
     const d = document.createElement('div');
-    if (line.startsWith('=====')) d.className = 'round';
-    else if (line.startsWith('Score') || line.startsWith('Fin de bataille')) d.className = 'score';
-    else if (line.startsWith('Tir') || line.startsWith('Combat') || line.startsWith('Charge')) d.className = 'combat';
-    else if (line.startsWith('      ')) d.className = 'detail';
-    else if (line.startsWith('ERREUR')) d.className = 'err';
+    d.className = lineClass(line);
     d.textContent = line;
     box.appendChild(d);
+    if (live && prefs.get('anim', true) && FEED_RE.test(line)) pushFeed(line);
   });
   logLen = since + lines.length;
   box.scrollTop = box.scrollHeight;
 }
+function pushFeed(text) {
+  const feed = $('feed');
+  const d = document.createElement('div');
+  const who = S && S.units ? S.units.find(u => text.includes(`[${u.id}]`)) : null;
+  if (who) d.className = who.side === 'attacker' ? 'att' : 'def';
+  d.textContent = text.length > 240 ? text.slice(0, 237) + '…' : text;
+  feed.appendChild(d);
+  while (feed.children.length > 4) feed.removeChild(feed.firstChild);
+  setTimeout(() => d.classList.add('fade'), 6500);
+  setTimeout(() => d.remove(), 7400);
+}
 
-// ------------------------------------------------------------ canvas
+// ------------------------------------------------------------ animations (mouvements adverses, rejeu)
+function startAnimation(prev, next) {
+  view.anim = null;
+  if (!prev || !prefs.get('anim', true) || view.replay) return;
+  const pl = place();
+  const from = {};
+  const old = {};
+  prev.units.forEach(u => u.models.forEach(m => { old[m.id] = m; }));
+  next.units.forEach(u => {
+    if (pl && pl.uid === u.id) return;
+    u.models.forEach(m => {
+      const o = old[m.id];
+      if (o && m.alive && o.alive && (Math.hypot(o.x - m.x, o.y - m.y) > 0.05 || Math.abs(angDelta(o.a || 0, m.a || 0)) > 0.01)) from[m.id] = [o.x, o.y, o.a || 0];
+    });
+  });
+  if (!Object.keys(from).length) return;
+  view.anim = { from, t0: performance.now(), dur: 520 };
+  const tick = () => { render(); if (view.anim && performance.now() - view.anim.t0 < view.anim.dur) requestAnimationFrame(tick); else { view.anim = null; render(); } };
+  requestAnimationFrame(tick);
+}
+async function startReplay(from) {
+  const data = await getJSON(withT(API + `/frames?from=${from}`));
+  if (!data.frames || !data.frames.length) return;
+  const pos = {};
+  for (const [mid, v] of Object.entries(data.initial)) pos[mid] = [v[0], v[1], v[2], v[3], v[4], v[5]];
+  view.replay = { frames: data.frames, idx: -1, pos, stop: false };
+  $('replaybar').classList.add('open');
+  const step = () => {
+    const R = view.replay; if (!R || R.stop) return endReplay();
+    R.idx += 1;
+    if (R.idx >= R.frames.length) return endReplay();
+    const f = R.frames[R.idx];
+    const who = S.players && S.players[f.side];
+    $('replaytext').textContent = `${R.idx + 1}/${R.frames.length} — ${who ? who.name : SIDE_FR[f.side]} : ${f.label || ''}`;
+    const start = {}, target = {};
+    for (const [mid, v] of Object.entries(f.models)) { start[mid] = R.pos[mid] ? [...R.pos[mid]] : v; target[mid] = v; }
+    const t0 = performance.now(), dur = Object.keys(target).length ? 450 : 0;
+    const anim = () => {
+      if (!view.replay) return;
+      const t = dur ? Math.min(1, (performance.now() - t0) / dur) : 1;
+      for (const mid of Object.keys(target)) {
+        const a = start[mid], b = target[mid];
+        R.pos[mid] = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + angDelta(a[2], b[2]) * t, b[3], b[4], b[5]];
+      }
+      render();
+      if (t < 1) requestAnimationFrame(anim); else setTimeout(step, Object.keys(target).length ? 350 : 160);
+    };
+    anim();
+  };
+  step();
+}
+function endReplay() { view.replay = null; $('replaybar').classList.remove('open'); render(); }
+$('replaystop').addEventListener('click', () => { if (view.replay) view.replay.stop = true; endReplay(); });
+
+// « pendant ton absence » : ce que l'adversaire a fait depuis ta dernière visite
+function seenKey() { return `seen.${GID}.${S.human_side}`; }
+function markSeen() { if (S && S.human_side) prefs.set(seenKey(), { n: S.history_length, timeline: S.timeline }); }
+async function checkAbsence() {
+  if (view.absenceShown || !S.human_side) return;
+  view.absenceShown = true;
+  const seen = prefs.get(seenKey(), null);
+  if (!seen) return;
+  // une annulation pendant l'absence a réécrit l'histoire à partir de last_undo.to
+  const rewritten = seen.timeline !== S.timeline;
+  const from = rewritten ? Math.min(seen.n, S.last_undo ? S.last_undo.to : 0) : seen.n;
+  if (S.history_length <= from && !rewritten) return;
+  const res = await getJSON(withT(API + '/history'));
+  const theirs = (res.history || []).filter(h => h.i >= from && h.side !== S.human_side);
+  const u = S.last_undo;
+  const undoTxt = rewritten && u ? ` ${u.by === S.human_side ? 'Tu as' : esc(u.name) + ' a'} annulé ${u.count} action(s) (retour à ${esc(u.where)}).` : '';
+  if (!theirs.length && !undoTxt) return;
+  const opp = S.players[S.human_side === 'attacker' ? 'defender' : 'attacker'];
+  const box = $('absence');
+  box.innerHTML = `<b>Pendant ton absence</b> : ${theirs.length} action(s) de ${esc(opp ? opp.name : 'l’adversaire')}.${undoTxt}
+    <button id="abs_replay">Rejouer en animation</button><button id="abs_list">Voir la liste</button><button id="abs_close">OK</button>
+    <div class="list" id="abs_items" style="display:none">${theirs.map(h => `${h.round ? 'R' + h.round + ' · ' : ''}${esc(PHASE_FR[h.phase] || h.phase)} — ${esc(h.label)}`).join('<br>')}</div>`;
+  box.classList.add('open');
+  $('abs_close').onclick = () => box.classList.remove('open');
+  $('abs_list').onclick = () => { const l = $('abs_items'); l.style.display = l.style.display === 'none' ? '' : 'none'; };
+  $('abs_replay').onclick = () => startReplay(from);
+}
+
+// ------------------------------------------------------------ notifications
+function beep() {
+  if (!prefs.get('sound', true)) return;
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    [[660, 0], [880, 0.16]].forEach(([f, t]) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.value = f; o.connect(g); g.connect(ac.destination);
+      g.gain.setValueAtTime(0.0001, ac.currentTime + t); g.gain.exponentialRampToValueAtTime(0.15, ac.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + t + 0.15);
+      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.16);
+    });
+  } catch (e) { /* audio indisponible */ }
+}
+function notifyTurn() {
+  const mine = humanTurn() && S.pending.kind !== 'observe';
+  if (mine && !view.wasMyTurn && lastVersion > 0) {
+    const away = document.visibilityState !== 'visible' || !document.hasFocus();
+    if (away) {
+      beep();
+      if (prefs.get('notify', false) && 'Notification' in window && Notification.permission === 'granted') {
+        try { new Notification('40kPlayer — à toi de jouer', { body: `${(S.game && S.game.title) || ''} — ${PHASE_FR[S.phase] || S.phase}`, tag: 'fortyk-' + GID }); } catch (e) { /* ignoré */ }
+      }
+    }
+  }
+  view.wasMyTurn = mine;
+}
+
+// ------------------------------------------------------------ plateau : vue (zoom, déplacement)
 function fit() {
-  const W = window.innerWidth - Math.min(560, Math.max(380, window.innerWidth * 0.36)) - 16;
-  const H = window.innerHeight - 16;
+  const narrow = window.innerWidth <= 900;
+  const W = narrow ? window.innerWidth - 8 : window.innerWidth - Math.min(560, Math.max(380, window.innerWidth * 0.36)) - 16;
+  const H = narrow ? Math.round(window.innerHeight * 0.72) : window.innerHeight - 16;
   const bw = layout ? layout.board[0] : 44, bh = layout ? layout.board[1] : 60;
-  scale = Math.max(6, Math.min((W - 2 * margin) / bw, (H - 2 * margin) / bh));
+  margin = narrow ? 14 : 22;
+  scale = Math.max(4, Math.min((W - 2 * margin) / bw, (H - 2 * margin) / bh));
   canvas.width = Math.round(bw * scale + 2 * margin);
   canvas.height = Math.round(bh * scale + 2 * margin);
-  render();
+  clampPan(); render();
 }
-const X = x => margin + x * scale, Y = y => margin + y * scale;
-const toBoard = (px, py) => [(px - margin) / scale, (py - margin) / scale];
-
-function modelPos(u, m) {
-  if (S.pending && S.pending.unit_id === u.id && local.pos[m.id]) return local.pos[m.id];
-  return [m.x, m.y];
+const X = x => margin + x * K + panX, Y = y => margin + y * K + panY;
+const toBoard = (px, py) => [(px - margin - panX) / K, (py - margin - panY) / K];
+function clampPan() {
+  K = scale * zoom;
+  if (zoom <= 1.0001) { panX = 0; panY = 0; return; }
+  const bw = layout ? layout.board[0] : 44, bh = layout ? layout.board[1] : 60;
+  panX = Math.min(0, Math.max(canvas.width - 2 * margin - bw * K, panX));
+  panY = Math.min(0, Math.max(canvas.height - 2 * margin - bh * K, panY));
 }
+function zoomAt(f, px, py) {
+  const [bx, by] = toBoard(px, py);
+  zoom = Math.min(5, Math.max(1, zoom * f)); K = scale * zoom;
+  panX = px - margin - bx * K; panY = py - margin - by * K;
+  clampPan(); render();
+}
+$('zin').onclick = () => zoomAt(1.35, canvas.width / 2, canvas.height / 2);
+$('zout').onclick = () => zoomAt(1 / 1.35, canvas.width / 2, canvas.height / 2);
+$('zreset').onclick = () => { zoom = 1; clampPan(); render(); };
+canvas.addEventListener('wheel', e => { e.preventDefault(); const r = canvas.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
 
 function render() {
   if (!layout) return;
+  K = scale * zoom;
   const [bw, bh] = layout.board;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#f4f1ea'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#e8e4da'; ctx.fillRect(X(0), Y(0), bw * scale, bh * scale);
-  ctx.lineWidth = 1; ctx.font = '10px sans-serif'; ctx.fillStyle = '#555'; ctx.textAlign = 'center';
-  for (let x = 0; x <= bw; x++) { ctx.strokeStyle = x % 4 ? '#d9d5cb' : '#c4c0b6'; ctx.beginPath(); ctx.moveTo(X(x), Y(0)); ctx.lineTo(X(x), Y(bh)); ctx.stroke(); if (x % 4 === 0) { ctx.fillText(x, X(x), 12); ctx.fillText(x, X(x), canvas.height - 4); } }
-  ctx.textAlign = 'right';
-  for (let y = 0; y <= bh; y++) { ctx.strokeStyle = y % 4 ? '#d9d5cb' : '#c4c0b6'; ctx.beginPath(); ctx.moveTo(X(0), Y(y)); ctx.lineTo(X(bw), Y(y)); ctx.stroke(); if (y % 4 === 0) { ctx.fillText(y, margin - 4, Y(y) + 3); ctx.textAlign = 'left'; ctx.fillText(y, X(bw) + 4, Y(y) + 3); ctx.textAlign = 'right'; } }
+  ctx.save(); ctx.beginPath(); ctx.rect(margin, margin, canvas.width - 2 * margin, canvas.height - 2 * margin); ctx.clip();
+  ctx.fillStyle = '#e8e4da'; ctx.fillRect(X(0), Y(0), bw * K, bh * K);
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= bw; x++) { ctx.strokeStyle = x % 4 ? '#d9d5cb' : '#c4c0b6'; ctx.beginPath(); ctx.moveTo(X(x), Y(0)); ctx.lineTo(X(x), Y(bh)); ctx.stroke(); }
+  for (let y = 0; y <= bh; y++) { ctx.strokeStyle = y % 4 ? '#d9d5cb' : '#c4c0b6'; ctx.beginPath(); ctx.moveTo(X(0), Y(y)); ctx.lineTo(X(bw), Y(y)); ctx.stroke(); }
   for (const [side, poly] of Object.entries(layout.deployment_zones)) {
     ctx.fillStyle = side === 'attacker' ? 'rgba(150,35,30,0.35)' : 'rgba(55,90,125,0.35)';
     ctx.beginPath(); poly.forEach((v, i) => i ? ctx.lineTo(X(v[0]), Y(v[1])) : ctx.moveTo(X(v[0]), Y(v[1]))); ctx.closePath(); ctx.fill();
@@ -468,9 +779,9 @@ function render() {
   layout.terrain.forEach(t => {
     const [x0, y0, x1, y1] = t.rect;
     ctx.fillStyle = t.kind === 'ruin' ? 'rgba(185,185,188,0.95)' : 'rgba(160,160,164,0.95)';
-    ctx.fillRect(X(x0), Y(y0), (x1 - x0) * scale, (y1 - y0) * scale);
+    ctx.fillRect(X(x0), Y(y0), (x1 - x0) * K, (y1 - y0) * K);
     ctx.lineWidth = 3; ctx.strokeStyle = t.density === 'dense' ? '#2d6e64' : '#b98c1e';
-    ctx.strokeRect(X(x0), Y(y0), (x1 - x0) * scale, (y1 - y0) * scale);
+    ctx.strokeRect(X(x0), Y(y0), (x1 - x0) * K, (y1 - y0) * K);
     ctx.fillStyle = '#333'; ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.fillText(t.id + (t.density === 'dense' ? ' D' : ' L'), X(x0) + 4, Y(y0) + 11);
   });
   const rr = layout.rules;
@@ -481,51 +792,53 @@ function render() {
     const label = o.id + (o.terrain_id ? ` (${o.terrain_id})` : '') + (st ? ` ${st.levels.attacker}-${st.levels.defender}` : '');
     ctx.font = '10px sans-serif'; ctx.textAlign = 'left';
     if (o.rect) {
-      // V11 (14.01) : l'objectif est l'empreinte de décor désignée par la carte ; on la contrôle
-      // avec des figurines dont le socle la touche
-      const [x0, y0, x1, y1] = o.rect, w = (x1 - x0) * scale, h = (y1 - y0) * scale;
+      const [x0, y0, x1, y1] = o.rect, w = (x1 - x0) * K, h = (y1 - y0) * K;
       ctx.fillStyle = who ? (who === 'attacker' ? 'rgba(150,35,30,0.18)' : 'rgba(55,90,125,0.18)') : 'rgba(255,255,255,0.12)';
       ctx.fillRect(X(x0), Y(y0), w, h);
       ctx.lineWidth = 4; ctx.strokeStyle = col; ctx.setLineDash(who ? [] : [7, 5]);
       ctx.strokeRect(X(x0) + 3, Y(y0) + 3, w - 6, h - 6); ctx.setLineDash([]);
-      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_marker_radius * scale * 0.6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_marker_radius * K * 0.6, 0, Math.PI * 2); ctx.fill();
       const tw = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(X(o.x) - tw / 2 - 3, Y(o.y) - rr.objective_marker_radius * scale - 14, tw + 6, 13);
-      ctx.fillStyle = '#222'; ctx.fillText(label, X(o.x) - tw / 2, Y(o.y) - rr.objective_marker_radius * scale - 4);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(X(o.x) - tw / 2 - 3, Y(o.y) - rr.objective_marker_radius * K - 14, tw + 6, 13);
+      ctx.fillStyle = '#222'; ctx.fillText(label, X(o.x) - tw / 2, Y(o.y) - rr.objective_marker_radius * K - 4);
       return;
     }
     ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.setLineDash(who ? [] : [4, 4]);
-    ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_control_radius * scale, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_marker_radius * scale, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#222';
-    ctx.fillText(label, X(o.x) + rr.objective_marker_radius * scale + 3, Y(o.y) - 4);
+    ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_control_radius * K, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_marker_radius * K, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.fillText(label, X(o.x) + rr.objective_marker_radius * K + 3, Y(o.y) - 4);
   });
-  if (!S) return;
-  const p = S.pending, placing = isPlacing(), active = placing ? p.unit_id : null;
-  const selecting = humanTurn() && p.kind === 'select_unit';
-  const selectable = selecting ? new Set(p.options.filter(o => o.unit_id).map(o => o.unit_id)) : new Set();
-  if (placing) {
+  if (S) renderUnits(rr);
+  ctx.restore();
+  // graduations (hors zone de dessin)
+  ctx.font = '10px sans-serif'; ctx.fillStyle = '#555'; ctx.textAlign = 'center';
+  for (let x = 0; x <= bw; x += 4) { const px = X(x); if (px >= margin - 1 && px <= canvas.width - margin + 1) { ctx.fillText(x, px, margin - 10); ctx.fillText(x, px, canvas.height - 4); } }
+  ctx.textAlign = 'right';
+  for (let y = 0; y <= bh; y += 4) { const py = Y(y); if (py >= margin - 1 && py <= canvas.height - margin + 1) { ctx.fillText(y, margin - 3, py + 3); ctx.textAlign = 'left'; ctx.fillText(y, canvas.width - margin + 3, py + 3); ctx.textAlign = 'right'; } }
+}
+
+function renderUnits(rr) {
+  const p = S.pending, pl = place(), active = pl ? pl.uid : null;
+  const selectable = selectableIds();
+  const R = view.replay;
+  if (pl) {
     S.units.filter(u => u.side !== S.human_side && !u.destroyed && u.deployed).forEach(u => u.models.filter(m => m.alive).forEach(m => {
-      const isTarget = p.kind === 'charge_move' && (u.id === p.target_id || (p.targets || []).includes(u.id));
+      const isTarget = pl.kind === 'charge_move' && (u.id === p.target_id || (p.targets || []).includes(u.id));
       ctx.strokeStyle = isTarget ? 'rgba(40,160,60,0.6)' : 'rgba(200,60,60,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
       shapePath(m, m.x, m.y, m.a || 0, isTarget ? 1 : rr.engagement_range); ctx.stroke(); ctx.setLineDash([]);
     }));
-    if (p.kind === 'disembark' && p.target_id) {
-      const t = unitById(p.target_id);
-      t.models.forEach(m => { ctx.strokeStyle = 'rgba(40,160,60,0.7)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); shapePath(m, m.x, m.y, m.a || 0, p.max_distance || 3); ctx.stroke(); ctx.setLineDash([]); });
+    if (pl.kind === 'disembark' && p.target_id) {
+      unitById(p.target_id).models.forEach(m => { ctx.strokeStyle = 'rgba(40,160,60,0.7)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); shapePath(m, m.x, m.y, m.a || 0, p.max_distance || 3); ctx.stroke(); ctx.setLineDash([]); });
     }
-    if (p.kind !== 'deploy' && p.kind !== 'disembark' && p.max_distance) {
-      for (const [mid, o] of Object.entries(local.orig)) {
+    if (pl.kind !== 'deploy' && pl.kind !== 'disembark' && pl.maxd) {
+      for (const o of Object.values(local.orig)) {
         ctx.strokeStyle = 'rgba(40,40,40,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
-        ctx.beginPath(); ctx.arc(X(o[0]), Y(o[1]), p.max_distance * scale, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(X(o[0]), Y(o[1]), pl.maxd * K, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
       }
     }
-    // fantômes des positions de départ et traits de déplacement
-    const u = unitById(active);
-    u.models.filter(m => m.alive && local.orig[m.id]).forEach(m => {
+    unitById(active).models.filter(m => m.alive && local.orig[m.id]).forEach(m => {  // fantômes et traits de déplacement
       const o = local.orig[m.id], n = local.pos[m.id];
-      const d = moveDist(m, o, n);
-      if (d > 0.02) {
+      if (moveDist(m, o, n) > 0.02) {
         ctx.strokeStyle = 'rgba(60,60,60,0.5)'; ctx.lineWidth = 1; ctx.setLineDash([]);
         shapePath(m, o[0], o[1], o.length > 2 ? o[2] : (m.a || 0), 0); ctx.stroke();
         ctx.strokeStyle = 'rgba(20,20,20,0.7)'; ctx.lineWidth = 1.5;
@@ -533,15 +846,17 @@ function render() {
       }
     });
   }
-  // figurines qui empêchent leur unité d'être Hidden (décision de tir en cours)
   const overhang = new Set();
-  if (p && p.kind === 'shoot') p.options.forEach(o => (o.outside_terrain || []).forEach(id => overhang.add(id)));
-  const order = S.units.filter(u => !u.destroyed && (u.deployed || u.id === active)).sort((a, b) => (a.id === active) - (b.id === active) || (a.side === S.human_side) - (b.side === S.human_side));
+  if (p && p.kind === 'shoot' && !R) p.options.forEach(o => (o.outside_terrain || []).forEach(id => overhang.add(id)));
+  const bad = local.check && !local.check.ok ? local.check.model_id : null;
+  const visible = u => R ? u.models.some(m => R.pos[m.id] && R.pos[m.id][3] && R.pos[m.id][5]) : (!u.destroyed && (u.deployed || u.id === active));
+  const order = S.units.filter(visible).sort((a, b) => (a.id === active) - (b.id === active) || (a.side === S.human_side) - (b.side === S.human_side));
   order.forEach(u => {
-    const alive = u.models.filter(m => m.alive);
+    const alive = u.models.filter(m => R ? (R.pos[m.id] && R.pos[m.id][3] && R.pos[m.id][5]) : m.alive);
     alive.forEach(m => {
-      const [x, y, a] = poseOf(u, m);
-      const r = innerSize(m) * scale;
+      const [x, y, a] = livePose(u, m);
+      const wounds = R && R.pos[m.id] ? R.pos[m.id][4] : m.wounds;
+      const r = innerSize(m) * K;
       shapePath(m, x, y, a, 0);
       ctx.fillStyle = COL[u.side]; ctx.fill();
       let outline = '#111', width = 1.2;
@@ -549,48 +864,52 @@ function render() {
       if (u.id === active) {
         outline = '#f2c744'; width = 3;
         const o = local.orig[m.id];
-        if (o && p.max_distance && p.kind !== 'disembark' && moveDist(m, o, local.pos[m.id]) > p.max_distance + 1e-6) outline = '#ff2020';
+        if ((o && pl.maxd && pl.kind !== 'disembark' && pl.kind !== 'deploy' && moveDist(m, o, local.pos[m.id]) > pl.maxd + 1e-6) || bad === m.id) outline = '#ff2020';
       } else if (selectable.has(u.id)) { outline = '#f2c744'; width = 2.5; }
       ctx.lineWidth = width; ctx.strokeStyle = outline; ctx.stroke();
-      if (!isRound(m)) {  // avant de la coque
-        const c = Math.cos(a), s = Math.sin(a), L = (m.hx + m.r) * scale;
+      if (!isRound(m)) {
+        const c = Math.cos(a), s = Math.sin(a), L = (m.hx + m.r) * K;
         ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X(x), Y(y)); ctx.lineTo(X(x) + c * L * 0.85, Y(y) + s * L * 0.85); ctx.stroke();
       }
-      if (local.selected.has(m.id)) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]); shapePath(m, x, y, a, 4 / scale); ctx.stroke(); ctx.setLineDash([]); }
-      if (m.wounds < m.max_wounds) { ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(X(x), Y(y), r * 0.45, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = `${Math.min(16, Math.max(8, r))}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(m.wounds, X(x), Y(y) + Math.min(16, Math.max(8, r)) * 0.35); }
-      if (S.oath_target === u.id) { ctx.strokeStyle = '#f2c744'; ctx.setLineDash([2, 2]); shapePath(m, x, y, a, 3 / scale); ctx.stroke(); ctx.setLineDash([]); }
+      if (local.selected.has(m.id) && u.id === active) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]); shapePath(m, x, y, a, 4 / K); ctx.stroke(); ctx.setLineDash([]); }
+      if (wounds < m.max_wounds) { ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(X(x), Y(y), r * 0.45, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = `${Math.min(16, Math.max(8, r))}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(wounds, X(x), Y(y) + Math.min(16, Math.max(8, r)) * 0.35); }
+      if (S.oath_target === u.id) { ctx.strokeStyle = '#f2c744'; ctx.setLineDash([2, 2]); shapePath(m, x, y, a, 3 / K); ctx.stroke(); ctx.setLineDash([]); }
     });
     if (alive.length) {
-      const cx = alive.reduce((a, m) => a + modelPos(u, m)[0], 0) / alive.length, cy = alive.reduce((a, m) => a + modelPos(u, m)[1], 0) / alive.length;
+      const cx = alive.reduce((acc, m) => acc + modelPos(u, m)[0], 0) / alive.length, cy = alive.reduce((acc, m) => acc + modelPos(u, m)[1], 0) / alive.length;
       ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.85)';
       const label = `${u.id} ` + (u.starting_strength === 1 ? `${alive[0].wounds}/${alive[0].max_wounds} PV` : `${u.strength}/${u.starting_strength}`) + (u.flags.battle_shocked ? ' BS' : '') + (u.flags.hidden ? ' caché' : '') + (u.passengers && u.passengers.length ? ` [à bord : ${u.passengers.join(', ')}]` : '');
-      const w = ctx.measureText(label).width + 6; ctx.fillRect(X(cx) - w / 2, Y(cy) - 2.2 * scale - 8, w, 13);
-      ctx.fillStyle = '#111'; ctx.fillText(label, X(cx), Y(cy) - 2.2 * scale + 2);
+      const w = ctx.measureText(label).width + 6; ctx.fillRect(X(cx) - w / 2, Y(cy) - 2.2 * K - 8, w, 13);
+      ctx.fillStyle = '#111'; ctx.fillText(label, X(cx), Y(cy) - 2.2 * K + 2);
     }
   });
-  // distances des figurines déplacées
-  if (placing && p.kind !== 'disembark') {
+  if (pl && pl.kind !== 'disembark') {  // distances des figurines déplacées
     const u = unitById(active);
     ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
     u.models.filter(m => m.alive && local.orig[m.id]).forEach(m => {
       const o = local.orig[m.id], n = local.pos[m.id];
       const d = moveDist(m, o, n);
-      if (d > 0.05) {
+      if (d > 0.05 && pl.kind !== 'deploy') {
         const txt = `${d.toFixed(1)}"`; const w = ctx.measureText(txt).width + 6;
-        const off = innerSize(m) * scale;
-        ctx.fillStyle = (p.max_distance && d > p.max_distance + 1e-6) ? 'rgba(200,30,30,0.9)' : 'rgba(0,0,0,0.75)';
+        const off = innerSize(m) * K;
+        ctx.fillStyle = (pl.maxd && d > pl.maxd + 1e-6) ? 'rgba(200,30,30,0.9)' : 'rgba(0,0,0,0.75)';
         ctx.fillRect(X(n[0]) + off + 2, Y(n[1]) - 7, w, 14); ctx.fillStyle = '#fff'; ctx.fillText(txt, X(n[0]) + off + 5, Y(n[1]) + 4);
       }
     });
+    if (bad && local.pos[bad] && local.check && local.check.error) {  // la raison du refus, à côté du socle fautif
+      const n = local.pos[bad], txt = local.check.error.length > 70 ? local.check.error.slice(0, 67) + '…' : local.check.error;
+      const w = ctx.measureText(txt).width + 8;
+      ctx.fillStyle = 'rgba(200,30,30,0.92)'; ctx.fillRect(X(n[0]) - w / 2, Y(n[1]) + 1.4 * K, w, 15);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(txt, X(n[0]), Y(n[1]) + 1.4 * K + 11);
+    }
   }
   if (local.band) {
     const b = local.band; ctx.strokeStyle = '#f2c744'; ctx.fillStyle = 'rgba(242,199,68,0.15)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
-    ctx.fillRect(X(b.x0), Y(b.y0), (b.x1 - b.x0) * scale, (b.y1 - b.y0) * scale); ctx.strokeRect(X(b.x0), Y(b.y0), (b.x1 - b.x0) * scale, (b.y1 - b.y0) * scale); ctx.setLineDash([]);
+    ctx.fillRect(X(b.x0), Y(b.y0), (b.x1 - b.x0) * K, (b.y1 - b.y0) * K); ctx.strokeRect(X(b.x0), Y(b.y0), (b.x1 - b.x0) * K, (b.y1 - b.y0) * K); ctx.setLineDash([]);
   }
-  if (local.hover && !local.dragging && !local.band) {
+  if (local.hover && !local.dragging && !local.band && !R) {
     const { u, m } = local.hover; const [x, y] = modelPos(u, m);
     ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
-    // infobulle minimale : nom de l'unité et PV de la figurine
     const txt = `${u.name} [${u.id}] — ${m.wounds}/${m.max_wounds} PV`;
     const w = ctx.measureText(txt).width + 8; ctx.fillRect(X(x) + 8, Y(y) - 26, w, 16); ctx.fillStyle = '#fff'; ctx.fillText(txt, X(x) + 12, Y(y) - 14);
   }
@@ -599,34 +918,82 @@ function render() {
 function modelAt(px, py, onlyUnit) {
   if (!S) return null;
   const [bx, by] = toBoard(px, py);
+  const pl = place();
   let best = null, bestD = 1e9;
-  S.units.filter(u => !u.destroyed && (onlyUnit ? u.id === onlyUnit : (u.deployed || (S.pending && S.pending.unit_id === u.id)))).forEach(u => u.models.filter(m => m.alive).forEach(m => {
-    const [x, y, a] = poseOf(u, m); const d = Math.hypot(x - bx, y - by);
-    if (inShape(m, x, y, a, bx, by, 0.15) && d < bestD) { best = { u, m }; bestD = d; }
+  S.units.filter(u => !u.destroyed && (onlyUnit ? u.id === onlyUnit : (u.deployed || (pl && pl.uid === u.id)))).forEach(u => u.models.filter(m => m.alive).forEach(m => {
+    const [x, y, a] = livePose(u, m); const d = Math.hypot(x - bx, y - by);
+    if (inShape(m, x, y, a, bx, by, 0.15 * Math.max(1, 12 / K)) && d < bestD) { best = { u, m }; bestD = d; }
   }));
   return best;
 }
-
 function snapshotPos() { return Object.fromEntries(Object.entries(local.pos).map(([k, v]) => [k, [...v]])); }
+function rotateSelection(dir) {
+  const pl = place(); if (!pl) return;
+  const u = unitById(pl.uid);
+  const ids = local.selected.size ? Array.from(local.selected) : (local.hover && local.hover.u.id === u.id ? [local.hover.m.id] : u.models.filter(m => m.alive).map(m => m.id));
+  let turned = false;
+  ids.forEach(k => { const m = u.models.find(q => q.id === k); const p = local.pos[k]; if (m && p && !isRound(m)) { p[2] = (p.length > 2 ? p[2] : m.a) + dir * Math.PI / 12; turned = true; } });
+  if (turned) { render(); updateMoveExtra(); scheduleCheck(); }
+}
 
-canvas.addEventListener('mousedown', e => {
-  if (!humanTurn()) return;
-  const p = S.pending;
-  if (!isPlacing()) return;
-  const hit = modelAt(e.offsetX, e.offsetY, p.unit_id);
-  const [bx, by] = toBoard(e.offsetX, e.offsetY);
-  if (!hit) {
-    // début d'un rectangle de sélection
-    local.band = { x0: bx, y0: by, x1: bx, y1: by, ax: bx, ay: by };
+// ------------------------------------------------------------ pointeur (souris, doigt, stylet)
+const pointers = new Map();
+let pinch = null, panning = null, downInfo = null;
+function evPos(e) { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) * canvas.width / r.width, (e.clientY - r.top) * canvas.height / r.height]; }
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  const [px, py] = evPos(e);
+  pointers.set(e.pointerId, [px, py]);
+  if (pointers.size === 2) {  // pincement : zoom + déplacement ; on abandonne le glissement en cours
+    if (local.dragging && local.dragStart) { local.pos = local.dragStart.snapshot; local.dragging = null; local.dragStart = null; }
+    local.band = null;
+    const [a, b] = [...pointers.values()];
+    pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2 };
     return;
   }
-  if (!local.selected.has(hit.m.id) && !e.shiftKey) local.selected = new Set([hit.m.id]);
-  local.dragging = hit.m.id; local.shift = e.shiftKey;
+  downInfo = { px, py, t: performance.now(), moved: false };
+  if (!S || view.replay) { panning = { px, py, x0: panX, y0: panY }; return; }
+  let pl = place();
+  const [bx, by] = toBoard(px, py);
+  if (directMovePhase() && (!pl || pl.pseudo)) {
+    // mouvement direct : saisir une de ses unités pendant « quelle unité ? » (ou passer à une autre)
+    const hit = modelAt(px, py, null);
+    if (hit && selectableIds().has(hit.u.id) && (!pl || hit.u.id !== pl.uid)) {
+      if (pl && hasMoved()) {
+        $('error').textContent = `Valide (ou réinitialise) d’abord le déplacement de ${pl.uid}.`;
+      } else { local.pseudo = hit.u.id; local.decisionKey = null; onNewState(); pl = place(); }
+    }
+  }
+  if (!pl) { panning = { px, py, x0: panX, y0: panY }; return; }
+  const hit = modelAt(px, py, pl.uid);
+  if (!hit) {
+    if (e.pointerType === 'mouse' && !e.altKey) local.band = { x0: bx, y0: by, x1: bx, y1: by, ax: bx, ay: by };  // rectangle de sélection
+    else panning = { px, py, x0: panX, y0: panY };  // au doigt : glisser le fond déplace le plateau
+    return;
+  }
+  const whole = e.shiftKey || local.wholeUnit;
+  if (!local.selected.has(hit.m.id) && !whole) local.selected = new Set([hit.m.id]);
+  local.dragging = hit.m.id; local.shift = whole;
   local.dragStart = { bx, by, snapshot: snapshotPos() };
   canvas.style.cursor = 'grabbing';
 });
-canvas.addEventListener('mousemove', e => {
-  const [bx, by] = toBoard(e.offsetX, e.offsetY);
+canvas.addEventListener('pointermove', e => {
+  const [px, py] = evPos(e);
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [px, py]);
+  if (downInfo && Math.hypot(px - downInfo.px, py - downInfo.py) > 6) downInfo.moved = true;
+  if (pinch && pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a[0] - b[0], a[1] - b[1]), cx = (a[0] + b[0]) / 2, cy = (a[1] + b[1]) / 2;
+    panX += cx - pinch.cx; panY += cy - pinch.cy;
+    zoomAt(d / pinch.d, cx, cy);
+    pinch = { d, cx, cy };
+    return;
+  }
+  const [bx, by] = toBoard(px, py);
+  if (panning) {
+    if (zoom > 1.0001) { panX = panning.x0 + px - panning.px; panY = panning.y0 + py - panning.py; clampPan(); render(); }
+    return;
+  }
   if (local.band) {
     local.band.x0 = Math.min(local.band.ax, bx); local.band.x1 = Math.max(local.band.ax, bx);
     local.band.y0 = Math.min(local.band.ay, by); local.band.y1 = Math.max(local.band.ay, by);
@@ -636,72 +1003,158 @@ canvas.addEventListener('mousemove', e => {
     const dx = bx - local.dragStart.bx, dy = by - local.dragStart.by;
     const ids = local.shift ? Object.keys(local.dragStart.snapshot) : Array.from(local.selected.size ? local.selected : [local.dragging]);
     ids.forEach(k => { const o = local.dragStart.snapshot[k]; if (o) local.pos[k] = [o[0] + dx, o[1] + dy, ...o.slice(2)]; });
-    render(); updateMoveExtra(); return;
+    render(); updateMoveExtra(); scheduleCheck(); return;
   }
-  const hit = modelAt(e.offsetX, e.offsetY, null);
+  if (e.pointerType !== 'mouse') return;
+  const hit = modelAt(px, py, null);
   const changed = (hit ? hit.m.id : null) !== (local.hover ? local.hover.m.id : null);
   local.hover = hit;
-  canvas.style.cursor = hit ? (isPlacing() && S.pending.unit_id === hit.u.id ? 'grab' : 'pointer') : (isPlacing() ? 'crosshair' : 'default');
-  if (changed) { render(); showUnit(hit ? hit.u : null); }
+  const pl = place();
+  canvas.style.cursor = hit ? ((pl && pl.uid === hit.u.id) || (directMovePhase() && selectableIds().has(hit.u.id)) ? 'grab' : 'pointer') : (pl ? 'crosshair' : (zoom > 1 ? 'move' : 'default'));
+  if (changed) { render(); renderUnitInfo(); }
 });
-window.addEventListener('mouseup', () => {
+function pointerEnd(e) {
+  pointers.delete(e.pointerId);
+  if (pinch) { if (pointers.size < 2) pinch = null; return; }
+  const info = downInfo; downInfo = null;
+  if (panning) {
+    panning = null;
+    if (info && !info.moved) boardClick(info.px, info.py);
+    return;
+  }
   if (local.band) {
     const b = local.band; local.band = null;
     if (Math.abs(b.x1 - b.x0) > 0.2 || Math.abs(b.y1 - b.y0) > 0.2) {
-      const u = unitById(S.pending.unit_id);
+      const u = unitById(place().uid);
       local.selected = new Set(u.models.filter(m => m.alive).filter(m => { const [x, y] = modelPos(u, m); return x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1; }).map(m => m.id));
-    } else local.selected = new Set();
+    } else { local.selected = new Set(); if (info) boardClick(info.px, info.py); }
     render(); return;
   }
-  if (local.dragging) { local.dragging = null; local.dragStart = null; canvas.style.cursor = 'default'; render(); }
-});
-window.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && S && S.human_side && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
-    e.preventDefault(); if (S.can_undo) undo(); return;
+  if (local.dragging) {
+    local.dragging = null; local.dragStart = null; canvas.style.cursor = 'default'; render();
+    if (info && !info.moved) boardClick(info.px, info.py);
+    else scheduleCheck();
   }
+}
+canvas.addEventListener('pointerup', pointerEnd);
+canvas.addEventListener('pointercancel', pointerEnd);
+
+// clic (sans glissement) sur le plateau : sélection, cible, ou fiche d'unité
+function boardClick(px, py) {
+  if (!S || view.replay) return;
+  const hit = modelAt(px, py, null);
+  if (!hit) return;
+  const p = S.pending;
+  if (humanTurn()) {
+    if (p.kind === 'stratagem') {
+      const opts = p.options.filter(o => o.stratagem && (o.unit_id === hit.u.id || o.target_id === hit.u.id));
+      if (opts.length === 1) { send({ type: 'option', index: opts[0].index }); return; }
+      if (opts.length > 1) { $('error').textContent = 'Plusieurs utilisations possibles avec cette unité : choisis avec les boutons.'; }
+    }
+    if (p.kind === 'select_unit' && hit.u.side === S.human_side) {
+      const opt = p.options.find(o => o.unit_id === hit.u.id && !o.stratagem);
+      if (opt && p.phase === 'movement' && !opt.embarked_in) { showDetails(hit.u.id); return; }  // déjà prise en main (mouvement direct)
+      if (opt) { send({ type: 'select_unit', unit_id: hit.u.id }); return; }
+      const why = p.ineligible && p.ineligible[hit.u.id];
+      $('error').textContent = why ? `${hit.u.name} [${hit.u.id}] : ${why.reason}` : `${hit.u.name} [${hit.u.id}] a déjà été activée.`;
+      showDetails(hit.u.id); return;
+    }
+    if ((p.kind === 'shoot' || p.kind === 'charge_target' || p.kind === 'oath' || p.kind === 'fight') && hit.u.side !== S.human_side) {
+      const opts = p.options.filter(o => o.target_id === hit.u.id);
+      if (opts.length === 1) { send({ type: 'option', index: opts[0].index }); return; }
+      if (opts.length > 1) { $('error').textContent = 'Plusieurs unités peuvent frapper cette cible : utilise les boutons.'; return; }
+      $('error').textContent = `${hit.u.name} [${hit.u.id}] n’est pas une cible possible ici.`;
+    }
+  }
+  showDetails(hit.u.id);
+}
+
+// ------------------------------------------------------------ clavier
+function clickKey(key) { const b = [...$('dbtns').querySelectorAll('button')].find(x => x.dataset.key === key); if (b) { b.click(); return true; } return false; }
+function nextUnit() {
+  if (!humanTurn() || S.pending.kind !== 'select_unit') return;
+  const ids = S.pending.options.filter(o => o.unit_id && !o.embarked_in && !o.stratagem).map(o => o.unit_id);
+  if (!ids.length) return;
+  if (directMovePhase()) {
+    const i = local.pseudo ? ids.indexOf(local.pseudo) : -1;
+    local.pseudo = ids[(i + 1) % ids.length]; local.decisionKey = null; onNewState(); render();
+  } else send({ type: 'select_unit', unit_id: ids[0] });
+}
+window.addEventListener('keydown', e => {
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && S && S.human_side && !typing) { e.preventDefault(); if (S.can_undo) undo(); return; }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'Escape') {
     if (local.dragging && local.dragStart) { local.pos = local.dragStart.snapshot; local.dragging = null; local.dragStart = null; canvas.style.cursor = 'default'; }
     else if (local.band) local.band = null;
-    else local.selected = new Set();
-    render(); if (S && S.pending && S.pending.max_distance) updateMoveExtra();
+    else if (local.selected.size) local.selected = new Set();
+    else if (local.pseudo) { local.pseudo = null; local.decisionKey = null; onNewState(); }
+    render(); updateMoveExtra(); return;
   }
-  if ((e.key === 'r' || e.key === 'R') && isPlacing() && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-    // pivote les coques / ovales sélectionnés (ou survolés) de 15° ; Maj + R dans l'autre sens
-    const u = unitById(S.pending.unit_id);
-    const ids = local.selected.size ? Array.from(local.selected) : (local.hover && local.hover.u.id === u.id ? [local.hover.m.id] : u.models.filter(m => m.alive).map(m => m.id));
-    let turned = false;
-    ids.forEach(k => { const m = u.models.find(q => q.id === k); const p = local.pos[k]; if (m && p && !isRound(m)) { p[2] = (p.length > 2 ? p[2] : m.a) + (e.shiftKey ? -1 : 1) * Math.PI / 12; turned = true; } });
-    if (turned) { e.preventDefault(); render(); updateMoveExtra(); }
-  }
-  if ((e.key === ' ' || e.key === 'Enter') && humanTurn() && S.pending.kind === 'observe' && !['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { e.preventDefault(); send({ type: 'continue' }); }
-});
-canvas.addEventListener('click', e => {
+  if (!S) return;
+  if (e.key === 'r' || e.key === 'R') { if (isPlacing()) { e.preventDefault(); rotateSelection(e.shiftKey ? -1 : 1); } return; }
+  if (e.key === 'i' || e.key === 'I') { if (local.hover) showDetails(local.hover.u.id); return; }
   if (!humanTurn()) return;
-  const p = S.pending;
-  const hit = modelAt(e.offsetX, e.offsetY, null);
-  if (!hit) return;
-  if (p.kind === 'select_unit') {
-    if (hit.u.side !== S.human_side) return;
-    const opt = p.options.find(o => o.unit_id === hit.u.id);
-    if (opt) send({ type: 'select_unit', unit_id: hit.u.id });
-    else { const why = p.ineligible && p.ineligible[hit.u.id]; $('error').textContent = why ? `${hit.u.name} [${hit.u.id}] : ${why.reason}` : `${hit.u.name} [${hit.u.id}] a déjà été activée.`; }
-    return;
-  }
-  if (!(p.kind === 'shoot' || p.kind === 'charge_target' || p.kind === 'oath' || p.kind === 'fight')) return;
-  if (hit.u.side === S.human_side) return;
-  const opts = p.options.filter(o => o.target_id === hit.u.id);
-  if (opts.length === 1) send({ type: 'option', index: opts[0].index });
-  else if (opts.length > 1) $('error').textContent = 'Plusieurs unités peuvent frapper cette cible : utilise les boutons.';
-  else $('error').textContent = `${hit.u.name} [${hit.u.id}] n’est pas une cible possible ici.`;
+  if ((e.key === 'Enter' || (e.key === ' ' && S.pending.kind === 'observe')) && document.activeElement.tagName !== 'BUTTON') { if (clickKey('↵')) e.preventDefault(); return; }
+  if (e.key === 's' || e.key === 'S') { clickKey('S'); return; }
+  if (e.key === 'a' || e.key === 'A') { clickKey('A'); return; }
+  if (e.key === 'e' || e.key === 'E') { clickKey('E'); return; }
+  if (/^[1-9]$/.test(e.key) && S.pending.kind === 'stratagem') { clickKey(e.key); return; }
+  if (e.key === 'n' || e.key === 'N' || e.key === 'Tab') { if (S.pending.kind === 'select_unit') { e.preventDefault(); nextUnit(); } }
 });
-$('stepmode').addEventListener('change', async e => { await postJSON(withT(API + '/settings'), { step_mode: e.target.checked }); });
 
-function showUnit(u) {
-  const box = $('unitinfo');
-  if (!u) { box.innerHTML = HELP; return; }
-  const f = u.flags; const flags = [f.engaged && 'engagée', f.advanced && 'a avancé', f.fell_back && 'repliée', f.charged && 'a chargé', f.battle_shocked && 'battle-shock', f.has_shot && 'a tiré', f.has_fought && 'a combattu'].filter(Boolean).join(', ');
-  box.innerHTML = `<b>${u.name} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}<br>armes : ${u.weapons.join(', ')}${flags ? '<br>' + flags : ''}${u.passengers && u.passengers.length ? '<br>à bord : ' + u.passengers.map(id => `${unitById(id).name} [${id}]`).join(', ') : ''}${u.embarked_in ? '<br>à bord de ' + u.embarked_in : ''}`;
+// ------------------------------------------------------------ fiche d'unité
+async function showDetails(uid) {
+  view.detailsUnit = uid;
+  if (!view.details[uid] || view.details[uid].v !== lastVersion) {
+    try { view.details[uid] = { v: lastVersion, d: await getJSON(withT(API + `/unit?id=${encodeURIComponent(uid)}`)) }; } catch (e) { return; }
+  }
+  renderUnitInfo();
 }
+function briefHtml(u) {
+  const f = u.flags; const flags = [f.engaged && 'engagée', f.advanced && 'a avancé', f.fell_back && 'repliée', f.charged && 'a chargé', f.battle_shocked && 'battle-shock', f.has_shot && 'a tiré', f.has_fought && 'a combattu', f.hidden && 'cachée'].filter(Boolean).join(', ');
+  return `<b>${esc(u.name)} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}${flags ? ' — ' + flags : ''}${u.embarked_in ? ' — à bord de ' + u.embarked_in : ''}`;
+}
+function renderUnitInfo() {
+  const box = $('unitinfo');
+  if (!S) { box.innerHTML = HELP; return; }
+  const hov = local.hover && local.hover.u;
+  const d = view.detailsUnit && view.details[view.detailsUnit] ? view.details[view.detailsUnit].d : null;
+  const u = d ? unitById(d.id) : null;
+  let html = hov && (!d || hov.id !== d.id) ? briefHtml(unitById(hov.id) || hov) + '<br>' : '';
+  if (d && u && d.ok !== false) html += detailsHtml(d, u);
+  else if (!html) html = HELP;
+  box.innerHTML = html;
+  const close = $('uclose'); if (close) close.onclick = () => { view.detailsUnit = null; renderUnitInfo(); };
+}
+function detailsHtml(d, u) {
+  const prof = d.profiles.map(p => `<tr><td>${esc(p.name)}${p.total > 1 ? ` ×${p.alive}/${p.total}` : ''}</td><td>${p.M ?? '-'}"</td><td>${p.T}</td><td>${p.Sv}+${p.InSv ? ` / ${p.InSv}++` : ''}</td><td>${p.W}</td><td>${p.Ld}+</td><td>${p.OC}</td></tr>`).join('');
+  const weap = d.weapons.map(w => `<tr><td>${esc(w.name)}${w.count > 1 ? ` ×${w.count}` : ''}</td><td>${w.range === null ? 'mêlée' : w.range + '"'}</td><td>${esc(w.A)}</td><td>${w.skill ? w.skill + '+' : 'auto'}</td><td>${w.S}</td><td>${w.AP}</td><td>${esc(w.D)}</td><td>${esc(w.keywords.join(', '))}</td></tr>`).join('');
+  const abil = d.abilities.map(a => `<details><summary>${esc(a.name)}${a.from ? ` <span style="color:var(--muted)">(${esc(a.from)})</span>` : ''}</summary>${esc(a.text)}</details>`).join('');
+  return `${briefHtml(u)} <button id="uclose" style="float:right;font-size:11px;padding:1px 6px">×</button>
+    ${d.leaders.length ? `<div>menée par ${esc(d.leaders.join(', '))}</div>` : ''}${d.enhancements.length ? `<div>améliorations : ${esc(d.enhancements.join(', '))}</div>` : ''}
+    <table><tr><th>Profil</th><th>M</th><th>T</th><th>Sv</th><th>W</th><th>Ld</th><th>OC</th></tr>${prof}</table>
+    <table><tr><th>Arme</th><th>Portée</th><th>A</th><th>CT/CC</th><th>S</th><th>PA</th><th>D</th><th>Mots-clés</th></tr>${weap}</table>
+    ${abil ? `<div style="margin-top:4px">${abil}</div>` : ''}<div style="margin-top:4px;font-size:11.5px">${esc(d.keywords.join(', '))}</div>`;
+}
+
+// ------------------------------------------------------------ réglages
+$('setbtn').addEventListener('click', () => $('settings').classList.toggle('open'));
+$('s_auto').addEventListener('change', e => saveSettings({ auto_actions: e.target.checked }));
+$('s_deploy').addEventListener('change', e => saveSettings({ auto_deploy: e.target.checked }));
+$('s_step').addEventListener('change', e => saveSettings({ step_mode: e.target.checked }));
+$('s_strat').addEventListener('change', e => saveSettings({ stratagems: e.target.checked }));
+$('s_sound').checked = prefs.get('sound', true); $('s_sound').addEventListener('change', e => prefs.set('sound', e.target.checked));
+$('s_anim').checked = prefs.get('anim', true); $('s_anim').addEventListener('change', e => prefs.set('anim', e.target.checked));
+$('s_notify').checked = prefs.get('notify', false) && 'Notification' in window && Notification.permission === 'granted';
+$('s_notify').addEventListener('change', async e => {
+  if (!e.target.checked) { prefs.set('notify', false); return; }
+  if (!('Notification' in window)) { e.target.checked = false; $('error').textContent = 'Ce navigateur ne gère pas les notifications.'; return; }
+  const perm = await Notification.requestPermission();
+  e.target.checked = perm === 'granted'; prefs.set('notify', perm === 'granted');
+  if (perm !== 'granted') $('error').textContent = 'Notifications refusées par le navigateur.';
+});
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markSeen(); });
 
 // ------------------------------------------------------------ suppression
 function gameGone(st) {
@@ -709,7 +1162,7 @@ function gameGone(st) {
   $('dhint').textContent = st.error || '';
   $('dbtns').innerHTML = ''; $('extra').innerHTML = '';
   $('dbtns').appendChild(btn('Retour à l’accueil', () => { location.href = '/'; }, 'primary'));
-  ['undobtn', 'histbtn', 'delbtn', 'steplabel'].forEach(id => { $(id).style.display = 'none'; });
+  ['undobtn', 'histbtn', 'delbtn', 'setbtn'].forEach(id => { $(id).style.display = 'none'; });
   try {  // on l'enlève de « Mes parties »
     const all = JSON.parse(localStorage.getItem('fortyk.mygames') || '[]');
     localStorage.setItem('fortyk.mygames', JSON.stringify(all.filter(g => g.id !== GID)));
@@ -733,15 +1186,14 @@ async function renderWaiting(st) {
   const key = JSON.stringify([st.you, st.can_join, st.join && st.join.code, st.players]);
   if (view.waitingKey === key) return;  // rien n'a changé : on ne réécrit pas le formulaire en cours de saisie
   view.waitingKey = key;
-  const P = st.players, open = st.open_side, mine = st.you;
+  const P = st.players, open = st.open_side;
   $('title').innerHTML = `${esc((st.game && st.game.title) || '40kPlayer')} <span class="pill">en attente</span>`;
   $('nameA').textContent = P.attacker && P.attacker.name ? `${P.attacker.name} — attaquant` : 'Attaquant (en attente)';
   $('nameD').textContent = P.defender && P.defender.name ? `${P.defender.name} — défenseur` : 'Défenseur (en attente)';
-  ['undobtn', 'histbtn', 'steplabel'].forEach(id => { $(id).style.display = 'none'; });
+  ['undobtn', 'histbtn', 'setbtn'].forEach(id => { $(id).style.display = 'none'; });
   $('delbtn').style.display = st.join ? '' : 'none';  // le créateur peut annuler sa partie en attente
   const box = $('dbtns'); box.innerHTML = ''; $('extra').innerHTML = ''; $('dobs').textContent = '';
   if (st.join) {
-    // le créateur : code à donner, ou lien d'invitation
     const invite = location.origin + st.join.invite;
     $('dtitle').textContent = 'En attente de ton adversaire';
     $('dhint').innerHTML = `Donne-lui le <b>code de partie</b> à taper sur l’accueil (« Rejoindre une partie ») :<div style="font:700 28px/1.2 ui-monospace,Menlo,monospace;letter-spacing:3px;color:var(--accent);margin:8px 0">${esc(st.join.code)}</div>ou envoie-lui le lien d’invitation. Il choisira sa liste en rejoignant ; la partie démarre aussitôt, cette page se met à jour toute seule.`;
@@ -778,7 +1230,6 @@ function rememberWaiting(st) {
 }
 
 // ------------------------------------------------------------ annulation, historique, mémoire locale
-const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function renderBanner() {
   const u = S.last_undo;
   if (view.seenUndo === null) { view.seenUndo = u ? u.n : 0; return; }  // annulations antérieures à l'ouverture de la page
@@ -786,9 +1237,10 @@ function renderBanner() {
   view.seenUndo = u.n;
   const mine = u.by === S.human_side;
   const who = mine ? 'Tu as annulé' : `${esc(u.name)} (${SIDE_FR[u.by]}) a annulé`;
-  $('banner').innerHTML = `<button id="bannerclose">OK</button>${who} ${u.count} action${u.count > 1 ? 's' : ''} — retour à ${esc(u.where)}, avant « ${esc(u.first)} ». Les dés suivants seront nouveaux.`;
+  $('banner').innerHTML = `<button id="bannerclose" style="float:right">OK</button>${who} ${u.count} action${u.count > 1 ? 's' : ''} — retour à ${esc(u.where)}, avant « ${esc(u.first)} ». Les dés suivants seront nouveaux.`;
   $('banner').classList.add('open');
   $('bannerclose').onclick = () => $('banner').classList.remove('open');
+  if (!mine) beep();
 }
 async function refreshHistory(force) {
   if (!view.historyOpen) return;
@@ -805,12 +1257,13 @@ function renderHistory() {
     const side = h.side === 'attacker' ? 'att' : 'def';
     const where = h.round ? `R${h.round} · ${PHASE_FR[h.phase] || h.phase}` : (PHASE_FR[h.phase] || h.phase);
     const btnHtml = S.human_side ? `<button data-to="${h.i}" class="${view.confirmAt === h.i ? 'confirm' : ''}">${view.confirmAt === h.i ? 'confirmer ?' : 'revenir avant'}</button>` : '';
-    return `<div class="h"><span class="i">${h.i + 1}</span><span class="w">${esc(where)}</span><span class="l ${side} ${h.by === 'bot' ? 'bot' : ''}">${esc(h.label)}</span>${btnHtml}</div>`;
+    return `<div class="h"><span class="i">${h.i + 1}</span><span class="w">${esc(where)}</span><span class="l ${side} ${h.by === 'bot' ? 'bot' : ''} ${h.by === 'auto' ? 'auto' : ''}">${esc(h.label)}${h.by === 'auto' ? ' (auto)' : ''}</span>${btnHtml}</div>`;
   }).join('');
-  box.innerHTML = `<div class="head"><span>Historique — ${view.history.length} action(s), la plus récente en haut</span><button id="histclose">Fermer</button></div>`
+  box.innerHTML = `<div class="head"><span>Historique — ${view.history.length} action(s), la plus récente en haut</span><span><button id="histreplay">Rejouer les 30 dernières</button> <button id="histclose">Fermer</button></span></div>`
     + (S.human_side ? '<div style="color:var(--muted);margin-bottom:4px">« revenir avant » annule cette action et toutes les suivantes (les deux joueurs le voient) ; les dés d’après seront nouveaux.</div>' : '')
     + (rows || '<div style="color:var(--muted)">Aucune action pour l’instant.</div>');
   $('histclose').onclick = () => { view.historyOpen = false; box.classList.remove('open'); };
+  $('histreplay').onclick = () => startReplay(Math.max(0, view.history.length - 30));
   box.querySelectorAll('button[data-to]').forEach(b => b.onclick = () => {
     const to = +b.dataset.to;
     if (view.confirmAt === to) undo(to);
@@ -826,18 +1279,18 @@ $('histbtn').addEventListener('click', () => {
 });
 $('undobtn').addEventListener('click', () => undo());
 function rememberGame() {
-  // le navigateur garde les parties ouvertes avec un lien de joueur (page d'accueil : « Mes parties »)
   if (!TOKEN || !S.human_side) return;
   try {
     const all = JSON.parse(localStorage.getItem('fortyk.mygames') || '[]');
     const link = location.pathname + location.search;
     const item = { id: GID, side: S.human_side, link, title: (S.game && S.game.title) || GID, seen: new Date().toISOString() };
-    const rest = all.filter(g => !(g.id === GID && g.side === S.human_side));
-    localStorage.setItem('fortyk.mygames', JSON.stringify([item, ...rest].slice(0, 100)));
+    localStorage.setItem('fortyk.mygames', JSON.stringify([item, ...all.filter(g => !(g.id === GID && g.side === S.human_side))].slice(0, 100)));
   } catch (e) { /* stockage indisponible : sans conséquence */ }
 }
 
+window.__fortykView = () => ({ margin, K: scale * zoom, panX, panY, zoom });  // lecture seule (tests, débogage)
 window.addEventListener('resize', fit);
+$('unitinfo').innerHTML = HELP;
 (async () => {
   const lay = await getJSON(API + '/layout');
   if (lay.ok === false) { gameGone(lay); return; }

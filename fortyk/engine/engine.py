@@ -57,10 +57,22 @@ from .actions import (
     OathAction,
     SelectUnitAction,
     ShootAction,
+    StratagemAction,
 )
 import numpy as np
 
-from .combat import fight_targets, is_vehicle_or_monster, resolve_fight, resolve_shooting, shooting_ineligibility, shooting_targets
+from .combat import (
+    explosives_targets,
+    fight_targets,
+    is_character_model,
+    is_vehicle_or_monster,
+    resolve_fight,
+    resolve_shooting,
+    shooting_ineligibility,
+    shooting_targets,
+    snap_targets,
+)
+from .stratagems import CORE_STRATAGEMS, WINDOWS, cost_of, record_use, unavailable
 
 from .fastgeo import deployment_grid_legal, shape_arrays
 from .geometry import disk_gap, extreme_points, point_in_polygon, within
@@ -143,6 +155,7 @@ DECISION_KINDS = {
     "charge_target": "charge_target",
     "charge_move": "charge_move",
     "fight": "fight",
+    "stratagem": "stratagem",
 }
 
 
@@ -405,9 +418,12 @@ class Engine:
         flow.active = side
         s.side_to_move = side
         self._say(s, f"\n--- Tour de {side} (round {s.battle_round}) ---", "turn", side=side)
-        for u in s.units_of(side, include_embarked=True):
+        # les drapeaux valent « ce tour » : rev 2, remis à zéro pour les deux camps (une unité qui a
+        # chargé à son tour n'est plus « chargeante » au tour adverse) ; rev 1 : camp actif seulement
+        for u in (s.units_of(side, include_embarked=True) if s.rev < 2 else list(s.units.values())):
             u.reset_turn_flags()
-            u.engaged_at_turn_start = {e.id for e in s.enemies_in_engagement_range(u)} if u.embarked_in is None else set()
+            if u.side == side:
+                u.engaged_at_turn_start = {e.id for e in s.enemies_in_engagement_range(u)} if u.embarked_in is None else set()
         s.update_sticky_control()
         s.controlled_at_turn_start = s.controlled_objectives(side)
         s.destroyed_this_turn = 0
@@ -420,21 +436,34 @@ class Engine:
                   "cp", cp=dict(s.cp))
         # V11 (08.03) : test pour chaque unité battle-shocked ou à moitié de son effectif (ou moins) ;
         # l'état persiste tant que l'unité n'a pas réussi un test
-        for u in s.units_of(side):
-            if not (u.battle_shocked or u.below_half_strength):
-                continue
-            was = u.battle_shocked
-            roll = s.roll(2)
-            if roll < u.leadership:
-                u.battle_shocked = True
-                self._say(s, f"Battle-shock : {u.name} rate son test ({roll} < {u.leadership}+) — battle-shocked (OC 0) jusqu'à un test réussi", "battle_shock", unit=u.id, roll=roll, passed=False)
-            else:
-                u.battle_shocked = False
-                self._say(s, f"Battle-shock : {u.name} réussit son test ({roll})" + (" — n'est plus battle-shocked" if was else ""), "battle_shock", unit=u.id, roll=roll, passed=True)
-        if any(u.has_ability("Oath of Moment") for u in s.units_of(side)) and s.enemies_of(side):
-            flow.step = "oath"
+        flow.bs_queue = [u.id for u in s.units_of(side) if u.battle_shocked or u.below_half_strength]
+        flow.step = "battle_shock_next"
+
+    def _auto_battle_shock_next(self, s: GameState, flow: Flow) -> None:
+        side = flow.active
+        if not flow.bs_queue:
+            flow.step = "oath" if any(u.has_ability("Oath of Moment") for u in s.units_of(side)) and s.enemies_of(side) else "command_end"
+            return
+        flow.unit_id = flow.bs_queue.pop(0)
+        self._open_window(s, flow, "insane_bravery", side, "battle_shock_roll", flow.unit_id)
+
+    def _auto_battle_shock_roll(self, s: GameState, flow: Flow) -> None:
+        u = s.unit(flow.unit_id)
+        flow.step = "battle_shock_next"
+        if u.is_destroyed:
+            return
+        if any(e[1] == "insane_bravery" and e[2] == u.id and e[3] == s.turn_counter for e in s.strat_used):
+            u.battle_shocked = False
+            self._say(s, f"Battle-shock : {u.name} — Insane Bravery : test réussi d'office", "battle_shock", unit=u.id, roll=None, passed=True)
+            return
+        was = u.battle_shocked
+        roll = s.roll(2)
+        if roll < u.leadership:
+            u.battle_shocked = True
+            self._say(s, f"Battle-shock : {u.name} rate son test ({roll} < {u.leadership}+) — battle-shocked (OC 0) jusqu'à un test réussi", "battle_shock", unit=u.id, roll=roll, passed=False)
         else:
-            flow.step = "command_end"
+            u.battle_shocked = False
+            self._say(s, f"Battle-shock : {u.name} réussit son test ({roll})" + (" — n'est plus battle-shocked" if was else ""), "battle_shock", unit=u.id, roll=roll, passed=True)
 
     def _d_oath(self, s: GameState, flow: Flow) -> Decision:
         return Decision("oath", flow.active, [OathAction(e.id) for e in s.enemies_of(flow.active)], note="cible d'Oath of Moment")
@@ -479,7 +508,7 @@ class Engine:
             pending.append(uid)
         flow.pending = pending
         flow.ineligible = ineligible
-        flow.step = "move_select" if flow.pending else "shoot_start"
+        flow.step = "move_select" if flow.pending else "move_end"
 
     def _d_move_select(self, s: GameState, flow: Flow) -> Decision:
         options: List[Action] = [SelectUnitAction(uid) for uid in flow.pending]
@@ -493,11 +522,15 @@ class Engine:
                 if u.embarked_in is None:
                     self._say(s, f"Mouvement : {u.name} reste immobile", "move", unit=uid, move="stationary")
             flow.pending = []
-            flow.step = "shoot_start"
+            flow.step = "move_end"
             return
         flow.pending.remove(action.unit_id)
         flow.unit_id = action.unit_id
         flow.step = "disembark" if s.unit(action.unit_id).embarked_in is not None else "move"
+
+    def _auto_move_end(self, s: GameState, flow: Flow) -> None:
+        """Fin de la phase de mouvement : fenêtre Fire Overwatch pour le joueur inactif (15.08)."""
+        self._open_window(s, flow, "fire_overwatch", other_side(flow.active), "shoot_start")
 
     # ---------------------------------------------------------------- transports
 
@@ -632,7 +665,7 @@ class Engine:
             flow.max_distance = u.move_in + roll
             u.advanced = True
             self._say(s, f"Mouvement : {u.name} déclare une Advance — D6 = {roll}, jusqu'à {flow.max_distance:g}\" par figurine", "advance", unit=u.id, roll=roll)
-            flow.step = "advance_move"
+            self._open_window(s, flow, "reroll_advance", flow.active, "advance_move", u.id)
             return
         msg = self.apply_move_action(s, u, action, u.move_in)
         self._notify(s, flow.active, msg)
@@ -662,7 +695,7 @@ class Engine:
         s.phase = "shooting"
         s.charge_targets_this_phase = set()
         flow.done = []
-        flow.step = "shoot_next"
+        self._open_window(s, flow, "smokescreen", other_side(flow.active), "shoot_next")
 
     def _auto_shoot_next(self, s: GameState, flow: Flow) -> None:
         eligible, ineligible = [], {}
@@ -684,12 +717,32 @@ class Engine:
 
     def _d_shoot_select(self, s: GameState, flow: Flow) -> Decision:
         options: List[Action] = [SelectUnitAction(uid) for uid in flow.eligible]
+        options += self._explosives_options(s, flow)
         options.append(EndPhaseAction())
         return Decision("select_unit", flow.active, options, phase="shooting", ineligible=dict(flow.ineligible))
+
+    def _explosives_options(self, s: GameState, flow: Flow) -> List[Action]:
+        """Explosives (15.05), proposé avant que l'unité ne tire : unité GRENADES / EXPLOSIVES désengagée,
+        éligible au tir, sans Advance ce tour."""
+        if not s.stratagems or unavailable(s, flow.active, "explosives") is not None:
+            return []
+        out: List[Action] = []
+        for uid in flow.eligible:
+            u = s.unit(uid)
+            if not (u.has_keyword("Grenades") or u.has_keyword("Explosives")) or u.advanced or s.is_engaged(u):
+                continue
+            if unavailable(s, flow.active, "explosives", u) is not None:
+                continue
+            out += [StratagemAction("explosives", u.id, target_id=t.id) for t in explosives_targets(s, u)]
+        return out
 
     def _a_shoot_select(self, s: GameState, flow: Flow, action) -> None:
         if isinstance(action, EndPhaseAction):
             flow.step = "charge_start"
+            return
+        if isinstance(action, StratagemAction):
+            self._use_explosives(s, flow, action)
+            flow.step = "shoot_next"
             return
         flow.done.append(action.unit_id)
         flow.unit_id = action.unit_id
@@ -783,7 +836,7 @@ class Engine:
         if not eligible:
             if not flow.done and ineligible and not any(u.charged for u in s.units_of(flow.active)):
                 self._say(s, "Charge : aucune unité ne peut charger — " + " ; ".join(f"{uid} : {why}" for uid, why in ineligible.items()), "charge_skip")
-            flow.step = "fight_start"
+            flow.step = "charge_end"
             return
         flow.eligible, flow.ineligible = eligible, ineligible
         flow.step = "charge_select"
@@ -795,7 +848,7 @@ class Engine:
 
     def _a_charge_select(self, s: GameState, flow: Flow, action) -> None:
         if isinstance(action, EndPhaseAction):
-            flow.step = "fight_start"
+            flow.step = "charge_end"
             return
         flow.unit_id = action.unit_id
         flow.candidates = [t.id for t in self.charge_targets(s, s.unit(action.unit_id))]
@@ -812,20 +865,30 @@ class Engine:
             flow.done.append(u.id)
             flow.step = "charge_next"
             return
-        candidates = [s.unit(tid) for tid in flow.candidates]
         roll = s.roll(2)
         flow.roll = roll
-        reachable = charge_reachable_targets(s, u, candidates, roll)
+        flow.charger = None
+        if s.stratagems:  # Command Re-roll : proposé si la charge rate ou n'atteint pas toutes les cibles
+            flow.reachable = [t.id for t in charge_reachable_targets(s, u, [s.unit(t) for t in flow.candidates], roll)]
+        self._open_window(s, flow, "reroll_charge", flow.active, "charge_roll_result", u.id)
+
+    def _auto_charge_roll_result(self, s: GameState, flow: Flow) -> None:
+        """Jet de charge fait (éventuellement relancé) : cibles atteignables, ou charge ratée."""
+        u = s.unit(flow.unit_id)
+        side = flow.charger if flow.hi else flow.active
+        roll = flow.roll
+        candidates = [s.unit(tid) for tid in flow.candidates if not s.unit(tid).is_destroyed]
+        reachable = charge_reachable_targets(s, u, candidates, roll) if candidates else []
         if roll == 2 or not reachable:
             if roll == 2:
                 self._say(s, f"Charge : {u.name} lance 2D6 = 2 (double 1) : échec automatique", "charge", unit=u.id, roll=roll, success=False)
             else:
-                nearest = min(charge_gap(u, t) for t in candidates)
+                nearest = min((charge_gap(u, t) for t in candidates), default=0.0)
                 self._say(s, f"Charge : {u.name} lance 2D6 = {roll} — aucune cible atteignable socle à socle (la plus proche est à {nearest:.1f}\") : charge ratée",
                           "charge", unit=u.id, roll=roll, success=False)
             flow.done.append(u.id)
-            self._notify(s, flow.active, s.log[-1] if s.log else f"{u.name} rate sa charge")
-            flow.step = "charge_next"
+            self._notify(s, side, s.log[-1] if s.log else f"{u.name} rate sa charge")
+            flow.step = self._after_charge(flow)
             return
         self._say(s, f"Charge : {u.name} lance 2D6 = {roll} — atteignable(s) : " + ", ".join(f"{t.id} ({charge_gap(u, t):.1f}\")" for t in reachable),
                   "charge_roll", unit=u.id, roll=roll, reachable=[t.id for t in reachable])
@@ -836,6 +899,10 @@ class Engine:
             flow.step = "charge_move"
         else:
             flow.step = "charge_target"
+
+    def _auto_charge_end(self, s: GameState, flow: Flow) -> None:
+        """Fin de la phase de charge : fenêtre Heroic Intervention pour le joueur inactif (15.11)."""
+        self._open_window(s, flow, "heroic_intervention", other_side(flow.active), "fight_start")
 
     def charge_target_options(self, s: GameState, unit: Unit, reachable: List[str]) -> List[ChargeAction]:
         """Choix des cibles (V11 11.04 : une ou plusieurs unités à portée du jet) : chaque cible seule,
@@ -853,9 +920,16 @@ class Engine:
                     out.append(ChargeAction(unit.id, combo[0], tuple(combo[1:])))
         return out
 
+    def _after_charge(self, flow: Flow) -> str:
+        """Étape suivant une charge résolue : la suivante, ou le combat après une Heroic Intervention."""
+        if flow.hi:
+            flow.hi, flow.charger = False, None
+            return "fight_start"
+        return "charge_next"
+
     def _d_charge_target(self, s: GameState, flow: Flow) -> Decision:
         u = s.unit(flow.unit_id)
-        return Decision("charge_target", flow.active, self.charge_target_options(s, u, flow.reachable), unit_id=flow.unit_id, max_distance=float(flow.roll),
+        return Decision("charge_target", flow.charger if flow.hi else flow.active, self.charge_target_options(s, u, flow.reachable), unit_id=flow.unit_id, max_distance=float(flow.roll),
                         note="une ou plusieurs cibles : l'unité devra finir engagée (2\") avec chacune, une figurine au moins socle à socle")
 
     def _a_charge_target(self, s: GameState, flow: Flow, action: ChargeAction) -> None:
@@ -865,7 +939,7 @@ class Engine:
 
     def _d_charge_move(self, s: GameState, flow: Flow) -> Decision:
         names = " + ".join(flow.targets)
-        return Decision("charge_move", flow.active, [AutoChargeMoveAction(flow.unit_id, flow.target_id)], unit_id=flow.unit_id, max_distance=float(flow.roll),
+        return Decision("charge_move", flow.charger if flow.hi else flow.active, [AutoChargeMoveAction(flow.unit_id, flow.target_id)], unit_id=flow.unit_id, max_distance=float(flow.roll),
                         target_id=flow.target_id, targets=tuple(flow.targets),
                         note=f"jet {flow.roll} : au moins une figurine socle à socle avec {names}, l'unité engagée (2\") avec chaque cible ; "
                              f"celles qui peuvent arriver à 1\" doivent le faire, sinon à 2\", sinon plus près")
@@ -891,8 +965,12 @@ class Engine:
             flow.done.append(u.id)
             self._say(s, f"Charge : {u.name} charge {names} avec {roll} : placement impossible ({reason}) — charge ratée", "charge", unit=u.id, target=targets[0].id,
                       targets=[t.id for t in targets], roll=roll, success=False)
-        self._notify(s, flow.active, s.log[-1] if s.log else f"{u.name} : charge")
-        flow.step = "charge_next"
+        side = flow.charger if flow.hi else flow.active
+        self._notify(s, side, s.log[-1] if s.log else f"{u.name} : charge")
+        was_hi = flow.hi
+        flow.step = self._after_charge(flow)
+        if ok and not was_hi and is_vehicle_or_monster(u):  # Crushing Impact (15.06) : « ta » phase de charge
+            self._open_window(s, flow, "crushing_impact", side, flow.step, u.id)
 
     # ---------------------------------------------------------------- combat
 
@@ -937,6 +1015,7 @@ class Engine:
         flow.last_activator = None
         flow.fight_start_engaged = []
         flow.fight_seen = []
+        flow.forced_fighter = None
         flow.step = "pile_in_step"
 
     def _auto_pile_in_step(self, s: GameState, flow: Flow) -> None:
@@ -972,14 +1051,28 @@ class Engine:
             return
 
     def _d_fight(self, s: GameState, flow: Flow) -> Decision:
-        options = [FightAction(u.id, t.id) for u in self.fight_pool(s, flow.fights_first)[flow.fight_side] for t in self.fight_options(s, u)]
+        pool = self.fight_pool(s, flow.fights_first)[flow.fight_side]
+        if flow.forced_fighter is not None:  # Counteroffensive : cette unité combat la première
+            forced = [u for u in pool if u.id == flow.forced_fighter]
+            if forced:
+                pool = forced
+        options = [FightAction(u.id, t.id) for u in pool for t in self.fight_options(s, u)]
         return Decision("fight", flow.fight_side, options)
 
     def _a_fight(self, s: GameState, flow: Flow, action: FightAction) -> None:
-        self.activate_fight(s, s.unit(action.unit_id), s.unit(action.target_id))
+        flow.unit_id, flow.target_id = action.unit_id, action.target_id
+        if flow.forced_fighter == action.unit_id:
+            flow.forced_fighter = None
+        self._open_window(s, flow, "epic_challenge", flow.fight_side, "fight_resolve", action.unit_id)
+
+    def _auto_fight_resolve(self, s: GameState, flow: Flow) -> None:
+        unit = s.unit(flow.unit_id)
+        self.activate_fight(s, unit, s.unit(flow.target_id))
         flow.last_activator = flow.fight_side
         flow.fight_side = other_side(flow.fight_side)
         flow.step = "fight_next"
+        if unit.side == flow.active:  # Counteroffensive (15.12) : « phase de combat de ton adversaire »
+            self._open_window(s, flow, "counteroffensive", other_side(flow.active), "fight_next")
 
     def activate_fight(self, s: GameState, unit: Unit, target: Unit) -> None:
         """L'unité combat : overrun fight (pile-in supplémentaire vers ``target``) si elle est
@@ -1105,6 +1198,256 @@ class Engine:
         totals = s.scoreboard.totals()
         self._say(s, f"\nRÉSULTAT : {s.summary()}", "result", scores=totals, winner=s.scoreboard.leader())
         flow.step = "game_over"
+
+    # ================================================================ stratagèmes (15)
+
+    def _open_window(self, s: GameState, flow: Flow, window: str, side: str, resume: str, unit_id: Optional[str] = None) -> None:
+        """Ouvre une fenêtre de stratagème si au moins une option est utilisable ; sinon on passe
+        directement à ``resume`` (passe automatique : rien n'est demandé au joueur)."""
+        flow.step = resume
+        if not s.stratagems:
+            return
+        flow.window, flow.window_side, flow.window_unit, flow.resume = window, side, unit_id, resume
+        if self._window_options(s, flow):
+            flow.step = "stratagem"
+        else:
+            flow.window = ""
+
+    def _window_options(self, s: GameState, flow: Flow) -> List[StratagemAction]:
+        return getattr(self, "_opts_" + flow.window)(s, flow, flow.window_side)
+
+    def _d_stratagem(self, s: GameState, flow: Flow) -> Decision:
+        key, when = WINDOWS[flow.window]
+        st = CORE_STRATAGEMS[key]
+        options: List[Action] = list(self._window_options(s, flow)) + [StratagemAction(None)]
+        note = f"{st.name} ({st.ref}, {cost_of(key)} CP) — {when} : {st.summary}. Tu as {s.cp.get(flow.window_side, 0)} CP."
+        return Decision("stratagem", flow.window_side, options, unit_id=None, phase=s.phase, note=note, window=flow.window)
+
+    def _a_stratagem(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        flow.window = ""
+        flow.step = flow.resume  # l'effet peut rediriger (Heroic Intervention → charge)
+        if action.stratagem is None:
+            return
+        getattr(self, "_use_" + action.stratagem)(s, flow, action)
+
+    def _strat_say(self, s: GameState, side: str, key: str, text: str, cost: int, **data) -> None:
+        st = CORE_STRATAGEMS[key]
+        self._say(s, f"Stratagème {st.name} ({cost} CP, reste {s.cp[side]}) — {side} : {text}", "stratagem", side=side, stratagem=key, cost=cost, **data)
+
+    # --- Command Re-roll (15.02) : jets d'Advance et de charge
+
+    def _opts_reroll_advance(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        u = s.unit(flow.window_unit)
+        if flow.roll >= 6 or unavailable(s, side, "command_reroll", u) is not None:
+            return []
+        return [StratagemAction("command_reroll", u.id, mode="advance")]
+
+    def _opts_reroll_charge(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        u = s.unit(flow.window_unit)
+        if unavailable(s, side, "command_reroll", u) is not None:
+            return []
+        if flow.roll != 2 and len(flow.reachable) >= len(flow.candidates):
+            return []  # toutes les cibles sont déjà atteignables : relancer ne peut rien apporter de sûr
+        return [StratagemAction("command_reroll", u.id, mode="charge")]
+
+    def _use_command_reroll(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        side = u.side
+        cost = record_use(s, side, "command_reroll", u.id, detail=action.mode)
+        old = flow.roll
+        if action.mode == "advance":
+            flow.roll = s.d6()
+            flow.max_distance = u.move_in + flow.roll
+            self._strat_say(s, side, "command_reroll", f"{u.name} relance son jet d'Advance : {old} → {flow.roll}, jusqu'à {flow.max_distance:g}\"", cost, unit=u.id, roll=flow.roll)
+        else:
+            flow.roll = s.roll(2)  # une charge se relance en entier (les deux dés)
+            self._strat_say(s, side, "command_reroll", f"{u.name} relance son jet de charge : {old} → {flow.roll}", cost, unit=u.id, roll=flow.roll)
+
+    # --- Insane Bravery (15.04)
+
+    def _opts_insane_bravery(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        u = s.unit(flow.window_unit)
+        if u.is_destroyed or unavailable(s, side, "insane_bravery", u) is not None:
+            return []  # une unité battle-shocked ne peut pas être ciblée (01.07)
+        return [StratagemAction("insane_bravery", u.id)]
+
+    def _use_insane_bravery(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        cost = record_use(s, u.side, "insane_bravery", u.id)
+        self._strat_say(s, u.side, "insane_bravery", f"{u.name} réussira son test de battle-shock", cost, unit=u.id)
+
+    # --- Epic Challenge (15.03)
+
+    def _opts_epic_challenge(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        u = s.unit(flow.window_unit)
+        if unavailable(s, side, "epic_challenge", u) is not None:
+            return []
+        chars = [m for m in u.alive_models if is_character_model(u, m)]
+        if not chars:
+            return []
+        # [PRECISION] ne sert que contre une unité qui a une figurine PERSONNAGE
+        foes = self.fight_options(s, u)
+        if not any(is_character_model(e, m) for e in foes for m in e.alive_models):
+            return []
+        return [StratagemAction("epic_challenge", u.id, model_id=m.id) for m in chars]
+
+    def _use_epic_challenge(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        cost = record_use(s, u.side, "epic_challenge", u.id, detail=action.model_id)
+        self._strat_say(s, u.side, "epic_challenge", f"les armes de mêlée de {action.model_id} ({u.name}) gagnent [PRECISION]", cost, unit=u.id, model=action.model_id)
+
+    # --- Explosives (15.05), dans la phase de tir du joueur actif
+
+    def _use_explosives(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u, t = s.unit(action.unit_id), s.unit(action.target_id)
+        cost = record_use(s, u.side, "explosives", u.id, detail=t.id)
+        rolls = [s.d6() for _ in range(6)]
+        mw = sum(1 for r in rolls if r >= 4)
+        lost = t.allocate_mortal_wounds(mw) if mw else 0
+        self._strat_say(s, u.side, "explosives", f"{u.name} lance ses grenades sur {t.name} : {rolls} → {mw} BM ({lost} fig.)"
+                        + (" — UNITÉ DÉTRUITE" if t.is_destroyed else ""), cost, unit=u.id, target=t.id, rolls=rolls, mortal_wounds=mw)
+        self._notify(s, u.side, s.log[-1] if s.log else "Explosives")
+        if t.is_destroyed:
+            s.destroyed_this_turn += 1
+            self.on_unit_destroyed(s, t)
+
+    # --- Crushing Impact (15.06)
+
+    def _opts_crushing_impact(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        u = s.unit(flow.window_unit)
+        if u.is_destroyed or unavailable(s, side, "crushing_impact", u) is not None:
+            return []
+        er = s.rules.engagement_range_in
+        out = []
+        for e in s.enemies_in_engagement_range(u):
+            engaged = [m for m in u.alive_models if any(within(m.disk, d, er) for d in e.disks())]
+            if engaged:  # la figurine la plus robuste lance le plus de dés
+                best = max(engaged, key=lambda m: m.profile.toughness)
+                out.append(StratagemAction("crushing_impact", u.id, target_id=e.id, model_id=best.id))
+        return out
+
+    def _use_crushing_impact(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u, t = s.unit(action.unit_id), s.unit(action.target_id)
+        m = next(q for q in u.models if q.id == action.model_id)
+        cost = record_use(s, u.side, "crushing_impact", u.id, detail=t.id)
+        rolls = [s.d6() for _ in range(m.profile.toughness)]
+        own = min(6, sum(1 for r in rolls if r == 1))
+        dealt = min(6, sum(1 for r in rolls if r >= 5))
+        lost_t = t.allocate_mortal_wounds(dealt) if dealt else 0
+        lost_u = u.allocate_mortal_wounds(own) if own else 0
+        self._strat_say(s, u.side, "crushing_impact", f"{u.name} écrase {t.name} : {len(rolls)}D6 {rolls} → {dealt} BM à {t.name} ({lost_t} fig.), "
+                        f"{own} BM à {u.name} ({lost_u} fig.)", cost, unit=u.id, target=t.id, rolls=rolls)
+        self._notify(s, u.side, s.log[-1] if s.log else "Crushing Impact")
+        if t.is_destroyed:
+            s.destroyed_this_turn += 1
+            self.on_unit_destroyed(s, t)
+        if u.is_destroyed:
+            self.on_unit_destroyed(s, u)
+
+    # --- Fire Overwatch (15.08) : fin de la phase de mouvement adverse
+
+    def _opts_fire_overwatch(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        if unavailable(s, side, "fire_overwatch") is not None:
+            return []
+        out = []
+        for u in s.units_of(side):
+            if u.has_keyword("Titanic") or s.is_engaged(u) or unavailable(s, side, "fire_overwatch", u) is not None:
+                continue
+            if not any(m.ranged_weapons for m in u.alive_models):
+                continue
+            out += [StratagemAction("fire_overwatch", u.id, target_id=t.id) for t in snap_targets(s, u)]
+        return out
+
+    def _use_fire_overwatch(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u, t = s.unit(action.unit_id), s.unit(action.target_id)
+        cost = record_use(s, u.side, "fire_overwatch", u.id, detail=t.id)
+        report = resolve_shooting(s, u, t, snap=True)
+        self._strat_say(s, u.side, "fire_overwatch", f"tir d'opportunité — {report}", cost, unit=u.id, target=t.id, damage=report.damage,
+                        slain=report.models_slain, destroyed=report.target_destroyed)
+        for d in report.details:
+            self._say(s, f"      {d}", "detail")
+        self._notify(s, u.side, f"Fire Overwatch : {report}")
+        if report.target_destroyed:
+            self.on_unit_destroyed(s, t)
+        if u.is_destroyed:
+            s.destroyed_this_turn += 1
+            self.on_unit_destroyed(s, u)
+
+    # --- Smokescreen (15.10) : début de la phase de tir adverse
+
+    def _opts_smokescreen(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        if unavailable(s, side, "smokescreen") is not None:
+            return []
+        smoke = [u for u in s.units_of(side) if u.has_keyword("Smoke") and unavailable(s, side, "smokescreen", u) is None]
+        if not smoke:
+            return []
+        threatened = {t.id for e in s.units_of(other_side(side)) if shooting_ineligibility(s, e) is None for t in shooting_targets(s, e)}
+        return [StratagemAction("smokescreen", u.id) for u in smoke if u.id in threatened]
+
+    def _use_smokescreen(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        cost = record_use(s, u.side, "smokescreen", u.id, detail=True)
+        self._strat_say(s, u.side, "smokescreen", f"{u.name} a le couvert contre les tirs jusqu'à la fin de la phase", cost, unit=u.id)
+
+    # --- Heroic Intervention (15.11) : fin de la phase de charge adverse
+
+    def heroic_candidates(self, s: GameState, unit: Unit, mode: str) -> List[Unit]:
+        """Cibles possibles (avant le jet) : Leap to Defend — unités ennemies qui ont fait un mouvement
+        de charge cette phase, à 12" ; Into the Fray — toute unité ennemie à 6"."""
+        enemies = s.enemies_of(unit.side)
+        if mode == "leap":
+            return [e for e in enemies if e.charged and unit.min_gap_to(e) <= s.rules.charge_declare_range_in + 1e-9]
+        return [e for e in enemies if unit.min_gap_to(e) <= 6.0 + 1e-9]
+
+    def _opts_heroic_intervention(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        if unavailable(s, side, "heroic_intervention") is not None:
+            return []
+        out = []
+        for u in s.units_of(side):
+            if s.is_engaged(u) or unavailable(s, side, "heroic_intervention", u) is not None:
+                continue
+            if u.has_keyword("Vehicle") and not (u.has_keyword("Character") or u.has_keyword("Walker")):
+                continue
+            if not any(u.min_gap_to(e) <= s.rules.charge_declare_range_in + 1e-9 for e in s.enemies_of(side)):
+                continue
+            for mode in ("leap", "fray"):
+                if self.heroic_candidates(s, u, mode) and unavailable(s, side, "heroic_intervention", u, mode=mode) is None:
+                    out.append(StratagemAction("heroic_intervention", u.id, mode=mode))
+        return out
+
+    def _use_heroic_intervention(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        side = u.side
+        cost = record_use(s, side, "heroic_intervention", u.id, detail=action.mode, mode=action.mode)
+        label = "Leap to Defend" if action.mode == "leap" else "Into the Fray"
+        flow.hi, flow.charger = True, side
+        flow.unit_id = u.id
+        flow.candidates = [e.id for e in self.heroic_candidates(s, u, action.mode)]
+        roll = s.roll(2)
+        capped = ""
+        if action.mode == "fray" and roll > 6:
+            capped = f" (plafonné à 6, jet {roll})"
+            roll = 6
+        flow.roll = roll
+        self._strat_say(s, side, "heroic_intervention", f"{u.name} intervient ({label}) — jet de charge {roll}{capped}", cost, unit=u.id, mode=action.mode, roll=roll)
+        flow.step = "charge_roll_result"
+
+    # --- Counteroffensive (15.12) : juste après qu'une unité ennemie a combattu
+
+    def _opts_counteroffensive(self, s: GameState, flow: Flow, side: str) -> List[StratagemAction]:
+        if not flow.fights_first or unavailable(s, side, "counteroffensive") is not None:
+            return []  # hors de l'étape Fights First, l'alternance donne déjà la main au joueur inactif
+        return [StratagemAction("counteroffensive", u.id) for u in s.units_of(side)
+                if not u.fights_first and self.fight_eligible(s, u) and self.fight_options(s, u) and unavailable(s, side, "counteroffensive", u) is None]
+
+    def _use_counteroffensive(self, s: GameState, flow: Flow, action: StratagemAction) -> None:
+        u = s.unit(action.unit_id)
+        cost = record_use(s, u.side, "counteroffensive", u.id)
+        u.fights_first = True
+        flow.forced_fighter = u.id
+        flow.fight_side = u.side
+        flow.fights_first = True
+        self._strat_say(s, u.side, "counteroffensive", f"{u.name} gagne Fights First et combat tout de suite", cost, unit=u.id)
 
     # ================================================================ règles partagées
 
