@@ -1,0 +1,16 @@
+# Déploiement « Compose » (Dokploy, ou docker compose up -d sur un serveur).
+# Dans Dokploy : le domaine (HTTPS) se règle dans l'onglet Domains, sur le service « fortyk », port 8040.
+services:
+  fortyk:
+    build: .
+    restart: unless-stopped
+    environment:
+      # code demandé pour créer une partie ou enregistrer une liste (vide = ouvert à tous)
+      FORTYK_ACCESS_CODE: ${FORTYK_ACCESS_CODE:-}
+    volumes:
+      - fortyk-data:/data
+    expose:
+      - "8040"
+
+volumes:
+  fortyk-data:

@@ -1,0 +1,327 @@
+{
+ "name": "Layout A",
+ "source": "Carte Layout A (mission deck 2026-27) numérisée depuis l'image fournie par Valentin (≈ 0.25\"). Objectifs aux positions des icônes de la carte, validées par Valentin (la carte est à garder telle quelle).",
+ "board": [
+  44.0,
+  60.0
+ ],
+ "orientation": "Origine en haut à gauche, x vers la droite (44\"), y vers le bas (60\"). Attaquant (rouge) en haut, défenseur (bleu) en bas.",
+ "deployment_zones": {
+  "attacker": [
+   [
+    0,
+    0
+   ],
+   [
+    44,
+    0
+   ],
+   [
+    44,
+    12
+   ],
+   [
+    22,
+    12
+   ],
+   [
+    22,
+    20
+   ],
+   [
+    0,
+    20
+   ]
+  ],
+  "defender": [
+   [
+    44,
+    60
+   ],
+   [
+    0,
+    60
+   ],
+   [
+    0,
+    48
+   ],
+   [
+    22,
+    48
+   ],
+   [
+    22,
+    40
+   ],
+   [
+    44,
+    40
+   ]
+  ]
+ },
+ "territory_line": [
+  [
+   0,
+   34.15
+  ],
+  [
+   44,
+   25.85
+  ]
+ ],
+ "objectives": [
+  {
+   "id": "home_attacker",
+   "kind": "home",
+   "owner": "attacker",
+   "x": 16.5,
+   "y": 10.1,
+   "estimated": false,
+   "terrain": "T1"
+  },
+  {
+   "id": "expansion_attacker",
+   "kind": "expansion",
+   "owner": "attacker",
+   "x": 36.8,
+   "y": 18.1,
+   "estimated": false,
+   "terrain": "T3"
+  },
+  {
+   "id": "central",
+   "kind": "central",
+   "owner": null,
+   "x": 22.0,
+   "y": 30.0,
+   "estimated": false,
+   "terrain": "T9"
+  },
+  {
+   "id": "expansion_defender",
+   "kind": "expansion",
+   "owner": "defender",
+   "x": 7.4,
+   "y": 40.8,
+   "estimated": false,
+   "terrain": "T3m"
+  },
+  {
+   "id": "home_defender",
+   "kind": "home",
+   "owner": "defender",
+   "x": 25.8,
+   "y": 47.3,
+   "estimated": false,
+   "terrain": "T1m"
+  }
+ ],
+ "terrain": [
+  {
+   "id": "T1",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    14.0,
+    6.0,
+    21.5,
+    17.5
+   ],
+   "label": "CD — home attaquant"
+  },
+  {
+   "id": "T2",
+   "kind": "ruin",
+   "density": "light",
+   "rect": [
+    26.5,
+    9.0,
+    33.0,
+    13.25
+   ],
+   "label": "petite ruine légère"
+  },
+  {
+   "id": "T3",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    32.5,
+    13.0,
+    40.0,
+    24.75
+   ],
+   "label": "GH/EF — objectif d'expansion attaquant"
+  },
+  {
+   "id": "T4",
+   "kind": "barricade",
+   "density": "dense",
+   "rect": [
+    2.0,
+    14.0,
+    8.0,
+    17.0
+   ],
+   "label": "barricade dense"
+  },
+  {
+   "id": "T5",
+   "kind": "barricade",
+   "density": "light",
+   "rect": [
+    8.0,
+    14.0,
+    12.0,
+    17.0
+   ],
+   "label": "barricade légère"
+  },
+  {
+   "id": "T6",
+   "kind": "barricade",
+   "density": "dense",
+   "rect": [
+    21.0,
+    17.25,
+    27.0,
+    20.0
+   ],
+   "label": "barricade dense sous CD"
+  },
+  {
+   "id": "T7",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    8.0,
+    22.0,
+    12.25,
+    28.0
+   ],
+   "label": "ruine étroite"
+  },
+  {
+   "id": "T8",
+   "kind": "barricade",
+   "density": "light",
+   "rect": [
+    4.0,
+    28.0,
+    10.5,
+    30.0
+   ],
+   "label": "barricade légère"
+  },
+  {
+   "id": "T9",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    16.25,
+    25.0,
+    27.75,
+    35.0
+   ],
+   "label": "AB — ruine centrale, objectif central"
+  },
+  {
+   "id": "T8m",
+   "kind": "barricade",
+   "density": "light",
+   "rect": [
+    33.5,
+    30.0,
+    40.0,
+    32.0
+   ],
+   "label": "barricade légère (miroir T8)"
+  },
+  {
+   "id": "T7m",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    31.75,
+    32.0,
+    36.0,
+    38.0
+   ],
+   "label": "ruine étroite (miroir T7)"
+  },
+  {
+   "id": "T3m",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    4.0,
+    35.25,
+    11.5,
+    47.0
+   ],
+   "label": "GH/EF — objectif d'expansion défenseur (miroir T3)"
+  },
+  {
+   "id": "T6m",
+   "kind": "barricade",
+   "density": "dense",
+   "rect": [
+    17.0,
+    40.0,
+    23.0,
+    42.75
+   ],
+   "label": "barricade dense sous CD (miroir T6)"
+  },
+  {
+   "id": "T1m",
+   "kind": "ruin",
+   "density": "dense",
+   "rect": [
+    22.5,
+    42.5,
+    30.0,
+    54.0
+   ],
+   "label": "CD — home défenseur (miroir T1)"
+  },
+  {
+   "id": "T5m",
+   "kind": "barricade",
+   "density": "light",
+   "rect": [
+    32.0,
+    43.0,
+    36.0,
+    46.0
+   ],
+   "label": "barricade légère (miroir T5)"
+  },
+  {
+   "id": "T4m",
+   "kind": "barricade",
+   "density": "dense",
+   "rect": [
+    36.0,
+    43.0,
+    42.0,
+    46.0
+   ],
+   "label": "barricade dense (miroir T4)"
+  },
+  {
+   "id": "T2m",
+   "kind": "ruin",
+   "density": "light",
+   "rect": [
+    11.0,
+    46.75,
+    17.5,
+    51.0
+   ],
+   "label": "petite ruine légère (miroir T2)"
+  }
+ ],
+ "_notes": "V11 (14.01) : chaque objectif est une empreinte de décor désignée par la carte (« terrain ») ; une figurine est à portée si son socle touche l'empreinte. « density » dense / light vient de la carte (Hidden, déplacement)."
+}

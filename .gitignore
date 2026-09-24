@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Téléchargements partiels de l'export Wahapedia (les .csv finaux sont versionnés
+# volontairement : ils datent le jeu de données utilisé par les tests)
+data/wahapedia/raw/*.part
+
+# Éditeurs / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Texte des règles de base V11 extrait du PDF de Games Workshop : référence locale, à ne pas publier
+data/rules/
+
+# Parties jouées sur le service web (un JSON par partie) : données locales, pas du code
+data/games/

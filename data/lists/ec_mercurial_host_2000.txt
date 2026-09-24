@@ -1,0 +1,50 @@
++++++++++++++++++++++++++++++++++++++++++++++++
++ FACTION KEYWORD: Chaos - Emperor's Children
++ DETACHMENT: Mercurial Host, Spectacle of Slaughter (Quicksilver Grace)
++ FORCE DISPOSITION: Reconnaissance
++ TOTAL ARMY POINTS: 2000pts
++
++ WARLORD: Char1: Fulgrim
++ ENHANCEMENT: Beguiling Grotesquerie (on Infa4: Flawless Blades)
+& Beguiling Grotesquerie (on Infa4: Flawless Blades)
+& Beguiling Grotesquerie (on Infa4: Flawless Blades)
++ NUMBER OF UNITS: 14
++ SECONDARY: - Bring It Down: (2x2) + (2x4) - Assassination: 4 Characters
++++++++++++++++++++++++++++++++++++++++++++++++
+
+Char1: 1x Fulgrim (340 pts): Warlord, Daemonic blades, Malefic lash, Serpentine tail
+Char3: 1x Lord Exultant (90 pts): Bolt pistol, Close combat weapon, Phoenix power spear, Plasma pistol
+Leading Infractors[1]
+Char4: 1x Lord Exultant (90 pts): Bolt pistol, Close combat weapon, Phoenix power spear, Plasma pistol
+Leading Infractors[2]
+Char2: 1x Lucius the Eternal (120 pts): Blade of the Laer, Lash of Torment
+Leading Flawless Blades[1]
+
+5x Infractors (85 pts)
+• 1x Obsessionist: Power sword, Bolt pistol
+• 4x Infractor: 4 with Bolt pistol, Duelling sabre
+  Attached to Lord Exultant[1]
+5x Infractors (85 pts)
+• 1x Obsessionist: Power sword, Bolt pistol
+• 4x Infractor: 4 with Bolt pistol, Duelling sabre
+  Attached to Lord Exultant[2]
+5x Tormentors (80 pts)
+• 1x Obsessionist: Bolt pistol, Power sword
+• 4x Tormentor: 4 with Boltgun, Close combat weapon
+
+1x Chaos Rhino (70 pts): Armoured tracks, Combi-bolter, Havoc launcher, Combi-bolter
+2x Chaos Spawn (70 pts): 2 with Hideous Mutations
+1x Defiler (330 pts): Ectoplasma destructor, 2x Excruciator cannon, Heavy reaper autocannon, Heavy reaper autocannon, Shearing claws
+3x Flawless Blades (110 pts)
+  Enhancement: Beguiling Grotesquerie (+15 pts)
+  3 with Blissblade, Bolt pistol
+  Attached to Lucius the Eternal
+6x Flawless Blades (205 pts)
+  Enhancement: Beguiling Grotesquerie (+15 pts)
+  6 with Blissblade, Bolt pistol
+6x Flawless Blades (205 pts)
+  Enhancement: Beguiling Grotesquerie (+15 pts)
+  6 with Blissblade, Bolt pistol
+1x Maulerfiend (120 pts): Maulerfiend fists, Lasher tendrils
+
+Created with newrecruit.eu v36.20

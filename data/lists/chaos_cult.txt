@@ -1,0 +1,56 @@
++++++++++++++++++++++++++++++++++++++++++++++++
++ FACTION KEYWORD: Chaos - Chaos Space Marines
++ DETACHMENT: Cabal of Chaos, Chaos Cult (Empyric Wellspring)
++ FORCE DISPOSITION: Priority Assets
++ TOTAL ARMY POINTS: 2000pts
++
++ ENHANCEMENT: Warped Foresight (on Char1: Dark Commune - Cult Demagogue)
+& Incendiary Goad (on Char2: Dark Commune - Cult Demagogue)
++ NUMBER OF UNITS: 14
++ SECONDARY: - Bring It Down: (2x2) + (1x4) - Assassination: 6 Characters - Cull The Horde: 3x5 (before leaders attached)
++++++++++++++++++++++++++++++++++++++++++++++++
+
+Char1: 5x Dark Commune (100 pts)
+• 1x Cult Demagogue: Autopistol, Commune stave
+      Enhancement: Warped Foresight (+10 pts)
+• 2x Blessed Blades: 2 with Commune blade
+• 1x Iconarch: Chaos icon, Autopistol, Close combat weapon
+• 1x Mindwitch: Close combat weapon, Warp Curse
+Char2: 5x Dark Commune (115 pts)
+• 1x Cult Demagogue: Autopistol, Commune stave
+      Enhancement: Incendiary Goad (+25 pts)
+• 2x Blessed Blades: 2 with Commune blade
+• 1x Iconarch: Chaos icon, Autopistol, Close combat weapon
+• 1x Mindwitch: Close combat weapon, Warp Curse
+Char3: 5x Dark Commune (100 pts)
+• 1x Cult Demagogue: Autopistol, Commune stave
+• 2x Blessed Blades: 2 with Commune blade
+• 1x Iconarch: Chaos icon, Autopistol, Close combat weapon
+• 1x Mindwitch: Close combat weapon, Warp Curse
+Char4: 1x Heretic Astartes Daemon Prince with wings (180 pts): Mark of Slaanesh, Hellforged weapons, Infernal cannon
+Char5: 1x Heretic Astartes Daemon Prince with wings (180 pts): Mark of Slaanesh, Hellforged weapons, Infernal cannon
+Char6: 1x Sorcerer in Terminator Armour (80 pts): Force weapon, Infernal Gaze, Combi-bolter
+
+10x Cultist Mob (50 pts)
+• 1x Cultist Champion: Brutal assault weapon, Autopistol
+• 9x Cultist: 9 with Autopistol, Brutal assault weapon
+5x Legionaries (90 pts)
+• 1x Aspiring Champion: Close combat weapon, Bolt pistol, Boltgun
+• 4x Legionary: 4 with Bolt pistol, Boltgun, Close combat weapon
+
+16x Accursed Cultists (195 pts)
+• 10x Mutant: 10 with Blasphemous appendages
+• 6x Torment: 6 with Hideous mutations
+16x Accursed Cultists (195 pts)
+• 10x Mutant: 10 with Blasphemous appendages
+• 6x Torment: 6 with Hideous mutations
+16x Accursed Cultists (215 pts)
+• 10x Mutant: 10 with Blasphemous appendages
+• 6x Torment: 6 with Hideous mutations
+1x Defiler (330 pts): Hades battle cannon, 2x Excruciator cannon, Heavy reaper autocannon, Heavy reaper autocannon, Shearing claws
+10x Fellgor Beastmen (60 pts)
+• 1x Fellgor Champion: Chainsword, Bolt pistol
+• 9x Beastman: 9 with Autopistol, Close combat weapon
+5x Red Corsairs Raiders (110 pts)
+• 1x Red Corsairs Raider Champion: Boltgun, Reaver's blade, Bolt pistol
+• 4x Red Corsairs Raider: 4 with Bolt pistol, Boltgun, Reaver's blade

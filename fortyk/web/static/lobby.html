@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>40kPlayer — parties</title>
+<style>
+  :root { --bg:#1e1f22; --panel:#2a2c30; --panel2:#232529; --ink:#e8e6e1; --muted:#9a9890; --att:#c83c3c; --def:#3c6ec8; --accent:#f2c744; --ok:#9be09b; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:18px 16px 60px; }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:2px 0 14px; color:var(--muted); }
+  section { background:var(--panel); border:1px solid #000; border-radius:8px; padding:14px 16px; margin:14px 0; }
+  section h2 { margin:0 0 10px; font-size:16px; color:var(--accent); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:7px 0; }
+  .row .lab { width:92px; color:var(--muted); }
+  select, input[type=text], input[type=password] { background:#1a1b1e; color:var(--ink); border:1px solid #555; border-radius:5px; padding:6px 8px; font-size:13px; }
+  select.list { min-width:330px; max-width:100%; }
+  textarea { width:100%; height:170px; background:#1a1b1e; color:var(--ink); border:1px solid #555; border-radius:5px; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; padding:8px; }
+  button, a.btn { background:#3a3d44; color:var(--ink); border:1px solid #555; border-radius:6px; padding:6px 11px; cursor:pointer; font-size:13px; text-decoration:none; display:inline-block; }
+  button:hover, a.btn:hover { background:#4a4e57; }
+  button.primary, a.btn.primary { background:#2f6b3a; border-color:#3f8f4f; }
+  button.primary:hover, a.btn.primary:hover { background:#38804a; }
+  .hint { color:var(--muted); font-size:12.5px; }
+  .bad { color:var(--err); } .ok { color:var(--ok); }
+  .side-att { color:#ff9a9a; } .side-def { color:#9ab8ff; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:500; border-bottom:1px solid #444; padding:5px 6px; }
+  td { border-bottom:1px solid #333; padding:6px; vertical-align:top; }
+  td .sub { color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; padding:0 7px; border-radius:10px; font-size:12px; background:#444; }
+  .pill.active { background:#2f6b3a; } .pill.finished { background:#555; }
+  .links .lk { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+  .links code { background:#1a1b1e; border:1px solid #444; border-radius:4px; padding:3px 6px; font-size:12px; word-break:break-all; }
+  #created { display:none; margin-top:12px; padding:10px 12px; background:var(--panel2); border-radius:6px; border:1px solid #3f8f4f; }
+  #report { font-size:12.5px; color:var(--muted); white-space:pre-wrap; margin-top:8px; }
+  #report b { color:var(--ink); }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>40kPlayer</h1>
+  <p>Warhammer 40,000 V11 en 2D — parties à deux (chacun son lien secret) ou contre le bot, sauvegardées et annulables. Chaque partie est enregistrée en JSON pour entraîner l’IA.</p>
+</header>
+
+<section>
+  <h2>Nouvelle partie</h2>
+  <div class="row"><span class="lab">Titre</span><input type="text" id="title" size="44" placeholder="facultatif (par défaut : les deux factions)"></div>
+  <div class="row"><span class="lab side-att">Attaquant</span><select class="list" id="listA"></select>
+    <select id="kindA"><option value="human">humain</option><option value="bot">bot aléatoire</option></select>
+    <input type="text" id="nameA" size="16" placeholder="nom du joueur"></div>
+  <div class="row"><span class="lab side-def">Défenseur</span><select class="list" id="listD"></select>
+    <select id="kindD"><option value="human">humain</option><option value="bot">bot aléatoire</option></select>
+    <input type="text" id="nameD" size="16" placeholder="nom du joueur"></div>
+  <div class="row" id="coderow" style="display:none"><span class="lab">Code d’accès</span><input type="password" id="code" size="18"> <span class="hint">demandé par ce serveur pour créer une partie (mémorisé dans ce navigateur)</span></div>
+  <div class="row"><button class="primary" id="create">Créer la partie</button><span id="createmsg" class="hint"></span></div>
+  <div id="created"></div>
+</section>
+
+<section>
+  <h2>Mes parties</h2>
+  <div class="hint" style="margin-bottom:6px">Les parties que ce navigateur a créées ou ouvertes avec un lien de joueur.</div>
+  <div id="mine"></div>
+</section>
+
+<section>
+  <h2>Toutes les parties</h2>
+  <div id="games"></div>
+</section>
+
+<section>
+  <h2>Importer une liste d’armée (export texte NewRecruit)</h2>
+  <div class="hint">Dans NewRecruit : ta liste → Export → format texte → copier, puis colle-la ici. « Vérifier » la résout contre Wahapedia (points recalculés, points à vérifier, règles jouées par le moteur) ; « Enregistrer » l’ajoute aux menus de nouvelle partie.</div>
+  <textarea id="listtext" placeholder="+ FACTION KEYWORD: Chaos - Emperor's Children&#10;+ DETACHMENT: …&#10;&#10;Char1: …"></textarea>
+  <div class="row"><span>Nom</span><input type="text" id="listname" placeholder="proposé après vérification" size="36">
+    <button id="check">Vérifier</button><button class="primary" id="save">Enregistrer</button></div>
+  <div id="report"></div>
+</section>
+</main>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const SIDE_FR = { attacker: 'attaquant', defender: 'défenseur' };
+const PHASE_FR = { deployment: 'déploiement', scouts: 'scouts', command: 'commandement', movement: 'mouvement', shooting: 'tir', charge: 'charge', fight: 'combat', end_turn: 'fin de tour', end_battle: 'fin de bataille' };
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* navigation privée */ } },
+};
+async function getJSON(url) { const r = await fetch(url); return r.json(); }
+async function postJSON(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return r.json(); }
+const abs = link => location.origin + link;
+let config = { access_code_required: false }, summaries = [];
+
+async function loadLists(keep) {
+  const data = await getJSON('/api/lists');
+  const opts = ['<option value="">Toy model (roster de test)</option>'].concat(data.lists.map(l => l.error
+    ? `<option value="${esc(l.name)}" disabled>${esc(l.name)} — illisible</option>`
+    : `<option value="${esc(l.name)}">${esc(l.name)} — ${esc(l.faction)}, ${l.points} pts${l.issues ? ` (${l.issues} à vérifier)` : ''}</option>`)).join('');
+  const a = keep ? $('listA').value : store.get('fortyk.listA', ''), d = keep ? $('listD').value : store.get('fortyk.listD', '');
+  $('listA').innerHTML = opts; $('listD').innerHTML = opts;
+  $('listA').value = a; $('listD').value = d;
+  if ($('listA').value !== a) $('listA').value = '';
+  if ($('listD').value !== d) $('listD').value = '';
+}
+
+function when(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); const s = (Date.now() - d.getTime()) / 1000;
+  if (s < 60) return 'à l’instant';
+  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
+  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function stateLine(g) {
+  if (!g) return '';
+  const where = g.round ? `round ${g.round}, ${PHASE_FR[g.phase] || g.phase}` : (PHASE_FR[g.phase] || g.phase || '');
+  const sc = g.scores ? ` — ${g.scores.attacker} / ${g.scores.defender} VP` : '';
+  return `${where}${sc}`;
+}
+function playersLine(g) {
+  const p = g.players || {};
+  const one = side => p[side] ? `<span class="${side === 'attacker' ? 'side-att' : 'side-def'}">${esc(p[side].name)}${p[side].kind === 'bot' ? ' (bot)' : ''}</span>` : '';
+  return `${one('attacker')} contre ${one('defender')}`;
+}
+
+function renderMine() {
+  const mine = store.get('fortyk.mygames', []);
+  const byId = Object.fromEntries(summaries.map(g => [g.id, g]));
+  if (!mine.length) { $('mine').innerHTML = '<div class="hint">Aucune pour l’instant.</div>'; return; }
+  const rows = mine.map(m => {
+    const g = byId[m.id];
+    const status = g ? `<span class="pill ${g.status}">${g.status === 'finished' ? 'terminée' : 'en cours'}</span>` : '<span class="pill">introuvable</span>';
+    const turn = g && g.status !== 'finished' && g.to_move ? (g.to_move === m.side ? ' — <b class="ok">à toi</b>' : ` — au tour ${g.to_move === 'attacker' ? 'de l’attaquant' : 'du défenseur'}`) : '';
+    return `<tr><td><b>${esc(g ? g.title : m.title)}</b><div class="sub">tu joues ${SIDE_FR[m.side]}${g ? ' · ' + playersLine(g) : ''}</div></td>
+      <td>${status}<div class="sub">${esc(stateLine(g))}${turn}</div></td><td class="sub">${esc(when(g ? g.updated : m.seen))}</td>
+      <td><a class="btn primary" href="${esc(m.link)}">Reprendre</a> <button data-copy="${esc(abs(m.link))}" data-label="Copier mon lien">Copier mon lien</button></td></tr>`;
+  }).join('');
+  $('mine').innerHTML = `<table><tr><th>Partie</th><th>État</th><th>Dernière action</th><th></th></tr>${rows}</table>`;
+  bindCopy($('mine'));
+}
+
+function renderGames() {
+  if (!summaries.length) { $('games').innerHTML = '<div class="hint">Aucune partie sur ce serveur.</div>'; return; }
+  const rows = summaries.map(g => `<tr><td><b>${esc(g.title)}</b><div class="sub">${playersLine(g)}</div></td>
+    <td><span class="pill ${g.status}">${g.status === 'finished' ? 'terminée' : 'en cours'}</span><div class="sub">${esc(stateLine(g))}</div></td>
+    <td class="sub">${g.actions} actions${g.undos ? `, ${g.undos} annulation(s)` : ''}<br>${esc(when(g.updated))}</td>
+    <td><a class="btn" href="/g/${esc(g.id)}">Regarder</a> <a class="btn" href="/api/g/${esc(g.id)}/record">JSON</a> <a class="btn" href="/api/g/${esc(g.id)}/export" title="états avant chaque décision, pour l’entraînement">Entraînement</a></td></tr>`).join('');
+  $('games').innerHTML = `<table><tr><th>Partie</th><th>État</th><th>Activité</th><th></th></tr>${rows}</table>
+    <div class="hint" style="margin-top:6px">« Regarder » ouvre la partie en spectateur ; pour jouer, il faut le lien secret de son camp.</div>`;
+}
+
+function bindCopy(root) {
+  root.querySelectorAll('button[data-copy]').forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copié ✓'; }
+    catch (e) { prompt('Copie ce lien :', b.dataset.copy); }
+    setTimeout(() => { b.textContent = b.dataset.label || 'Copier'; }, 1500);
+  });
+}
+
+async function refresh() {
+  try { summaries = (await getJSON('/api/games')).games || []; } catch (e) { summaries = []; }
+  renderMine(); renderGames();
+}
+
+$('create').addEventListener('click', async () => {
+  $('createmsg').textContent = 'Création… (lecture des listes, préparation du plateau)';
+  const code = $('code').value;
+  if (code) store.set('fortyk.code', code);
+  store.set('fortyk.listA', $('listA').value); store.set('fortyk.listD', $('listD').value);
+  const body = {
+    title: $('title').value,
+    lists: { attacker: $('listA').value || null, defender: $('listD').value || null },
+    players: { attacker: { kind: $('kindA').value, name: $('nameA').value }, defender: { kind: $('kindD').value, name: $('nameD').value } },
+    access_code: code,
+  };
+  const res = await postJSON('/api/games', body);
+  if (!res.ok) { $('createmsg').innerHTML = `<span class="bad">${esc(res.error)}</span>`; return; }
+  $('createmsg').textContent = '';
+  const mine = store.get('fortyk.mygames', []);
+  const lines = Object.entries(res.links).map(([side, link]) => {
+    mine.unshift({ id: res.id, side, link, title: res.title, seen: new Date().toISOString() });
+    const who = res.players[side].name;
+    return `<div class="lk"><span class="${side === 'attacker' ? 'side-att' : 'side-def'}" style="width:170px">${esc(who)} — ${SIDE_FR[side]}</span>
+      <code>${esc(abs(link))}</code><button data-copy="${esc(abs(link))}">Copier</button><a class="btn primary" href="${esc(link)}">Jouer ce camp</a></div>`;
+  }).join('');
+  store.set('fortyk.mygames', mine.slice(0, 100));
+  $('created').innerHTML = `<b>Partie créée : ${esc(res.title)}</b><div class="links">${lines}
+    <div class="lk"><span style="width:170px" class="hint">spectateurs</span><code>${esc(abs(res.spectate))}</code><button data-copy="${esc(abs(res.spectate))}">Copier</button></div></div>
+    <div class="hint">Envoie à ton adversaire le lien de son camp (il ne donne accès qu’à ce camp). Garde le tien : il rouvre la partie là où elle en est, depuis n’importe quel appareil.</div>`;
+  $('created').style.display = 'block';
+  bindCopy($('created'));
+  refresh();
+});
+
+function showReport(res) {
+  if (!res.ok) { $('report').innerHTML = `<span class="bad">${esc(res.error)}</span>`; return; }
+  const r = res.report;
+  const lines = [`<b>${esc(r.faction)}</b> — ${r.points} pts recalculés` + (r.points_listed ? ` (liste : ${r.points_listed} pts)` : '') + ` — ${esc(r.detachments.join(' + '))}`,
+    `Règles de détachement actives : ${esc(r.rules.join(', ') || 'aucune')}`,
+    `Unités : ` + r.units.map(u => `${esc(u.name)} (${u.models} fig., ${u.points} pts${u.transport ? ', transport' : ''})`).join(' ; '),
+    r.issues.length ? `<span class="bad">À vérifier : ${esc(r.issues.join(' ; '))}</span>` : '<span class="ok">Aucun point à vérifier.</span>',
+    `Moteur : ${r.coverage['joué']} règles jouées, ${r.coverage['partiel']} partielles, ${r.coverage['non joué']} pas encore jouées` + (r.not_played.length ? ` — ${esc(r.not_played.slice(0, 12).join(', '))}${r.not_played.length > 12 ? '…' : ''}` : '')];
+  $('report').innerHTML = lines.join('<br>');
+  if (res.name && !$('listname').value) $('listname').value = res.name;
+}
+$('check').addEventListener('click', async () => { $('report').textContent = 'Résolution…'; showReport(await postJSON('/api/lists/preview', { text: $('listtext').value })); });
+$('save').addEventListener('click', async () => {
+  $('report').textContent = 'Enregistrement…';
+  const res = await postJSON('/api/lists/save', { text: $('listtext').value, name: $('listname').value, access_code: $('code').value || store.get('fortyk.code', '') });
+  showReport(res);
+  if (res.ok) { await loadLists(true); $('report').innerHTML += `<br><span class="ok">Enregistrée sous « ${esc(res.name)} » : elle est dans les menus de nouvelle partie.</span>`; }
+});
+
+(async () => {
+  try { config = await getJSON('/api/config'); } catch (e) { /* ancien serveur */ }
+  if (config.access_code_required) { $('coderow').style.display = ''; $('code').value = store.get('fortyk.code', ''); }
+  await loadLists(false);
+  await refresh();
+  setInterval(refresh, 15000);
+})();
+})();
+</script>
+</body>
+</html>

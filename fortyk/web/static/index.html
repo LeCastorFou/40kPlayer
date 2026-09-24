@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>40kPlayer</title>
+<style>
+  :root { --bg:#1e1f22; --panel:#2a2c30; --ink:#e8e6e1; --muted:#9a9890; --att:#c83c3c; --def:#3c6ec8; --accent:#f2c744; --ok:#4caf50; --err:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; display:flex; height:100vh; overflow:hidden; }
+  #boardwrap { flex: 0 0 auto; display:flex; align-items:center; justify-content:center; padding:8px; background:#161719; }
+  canvas { display:block; background:#e8e4da; border-radius:4px; cursor:default; }
+  #side { flex:1 1 auto; display:flex; flex-direction:column; min-width:380px; max-width:560px; height:100vh; }
+  #status { padding:10px 14px; background:var(--panel); border-bottom:1px solid #000; }
+  #status h1 { margin:0 0 4px; font-size:16px; font-weight:600; }
+  .score { display:flex; gap:14px; font-size:15px; align-items:center; flex-wrap:wrap; }
+  .score b.att { color:#ff8a8a; } .score b.def { color:#8ab4ff; }
+  .score label { margin-left:auto; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; }
+  #status, #decision, #unitinfo { flex:0 0 auto; }
+  #decision { padding:12px 14px; background:#232529; border-bottom:1px solid #000; min-height:150px; max-height:45vh; overflow:auto; }
+  #decision h2 { margin:0 0 6px; font-size:15px; color:var(--accent); }
+  #decision .hint { color:var(--muted); font-size:13px; margin-bottom:8px; }
+  #decision .observe { color:#f0d9a0; font-size:14px; margin-bottom:8px; white-space:pre-wrap; }
+  .btns { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  button { background:#3a3d44; color:var(--ink); border:1px solid #555; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
+  button:hover { background:#4a4e57; }
+  button.primary { background:#2f6b3a; border-color:#3f8f4f; }
+  button.primary:hover { background:#38804a; }
+  button.warn { background:#6b3a2f; border-color:#8f4f3f; }
+  button.active { outline:2px solid var(--accent); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  #error { color:var(--err); margin-top:6px; min-height:18px; font-size:13px; }
+  #extra { color:var(--muted); font-size:12.5px; margin-top:6px; white-space:pre-wrap; }
+  #extra .bad { color:var(--err); }
+  #unitinfo { padding:10px 14px; font-size:13px; color:var(--muted); border-bottom:1px solid #000; min-height:70px; }
+  #unitinfo b { color:var(--ink); }
+  #log { flex:1 1 auto; min-height:0; overflow:auto; padding:8px 14px; font: 12.5px/1.45 ui-monospace, Menlo, Consolas, monospace; background:#1a1b1e; }
+  #log div { white-space:pre-wrap; }
+  #log .round { color:var(--accent); font-weight:700; margin-top:6px; }
+  #log .score { color:#9be09b; }
+  #log .combat { color:#f0b090; }
+  #log .detail { color:#77787a; }
+  #log .err { color:var(--err); }
+  .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:12px; background:#444; margin-left:6px; }
+  .pill.att { background:var(--att); } .pill.def { background:var(--def); }
+  kbd { background:#444; border-radius:3px; padding:0 4px; font-size:12px; }
+  #topbar { display:flex; gap:6px; align-items:center; float:right; }
+  #topbar a, #topbar button { font-size:12px; padding:3px 8px; }
+  a.btnlink { color:var(--ink); text-decoration:none; background:#3a3d44; border:1px solid #555; border-radius:6px; }
+  a.btnlink:hover { background:#4a4e57; }
+  #banner { display:none; padding:8px 14px; background:#5a4a1a; color:#fff3c8; font-size:13px; border-bottom:1px solid #000; }
+  #banner.open { display:block; }
+  #banner button { float:right; font-size:12px; padding:1px 7px; margin-left:8px; }
+  #history { display:none; flex:0 0 auto; max-height:32vh; overflow:auto; background:#202226; border-bottom:1px solid #000; padding:6px 10px; font-size:12.5px; }
+  #history.open { display:block; }
+  #history .h { display:flex; gap:6px; align-items:center; padding:2px 0; border-bottom:1px solid #2c2e33; }
+  #history .h .i { color:var(--muted); width:34px; text-align:right; flex:0 0 auto; }
+  #history .h .w { color:var(--muted); width:118px; flex:0 0 auto; }
+  #history .h .l { flex:1 1 auto; }
+  #history .h .l.att { color:#ffb0b0; } #history .h .l.def { color:#b0c8ff; }
+  #history .h .l.bot { font-style:italic; }
+  #history .h button { font-size:11px; padding:1px 6px; }
+  #history .h button.confirm { background:#8f3f2f; border-color:#c05a45; }
+  #history .head { display:flex; justify-content:space-between; align-items:center; color:var(--accent); margin-bottom:4px; }
+</style>
+</head>
+<body>
+<div id="boardwrap"><canvas id="board"></canvas></div>
+<div id="side">
+  <div id="status">
+    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
+    <h1 id="title">40kPlayer</h1>
+    <div class="score"><span>Round <b id="round">–</b></span><span>Phase <b id="phase">–</b></span><span id="turn"></span></div>
+    <div class="score"><span><span id="nameA">Attaquant</span> <b class="att" id="scoreA">0</b> VP · <b class="att" id="cpA">0</b> CP</span><span><span id="nameD">Défenseur</span> <b class="def" id="scoreD">0</b> VP · <b class="def" id="cpD">0</b> CP</span>
+      <label id="steplabel"><input type="checkbox" id="stepmode" checked> pas à pas (valider chaque action du bot)</label></div>
+  </div>
+  <div id="banner"></div>
+  <div id="history"></div>
+  <div id="decision"><h2 id="dtitle">Connexion…</h2><div class="observe" id="dobs"></div><div class="hint" id="dhint"></div><div class="btns" id="dbtns"></div><div id="extra"></div><div id="error"></div></div>
+  <div id="unitinfo">Survole une figurine pour voir son unité. Pendant un mouvement : glisse une figurine, encadre-en plusieurs à la souris pour les déplacer ensemble, <kbd>Maj</kbd> + glisser déplace toute l’unité, <kbd>R</kbd> / <kbd>Maj</kbd>+<kbd>R</kbd> pivote une coque de 15°, <kbd>Échap</kbd> annule.</div>
+  <div id="log"></div>
+</div>
+<script>
+(() => {
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+
+let layout = null, S = null, logLen = 0, lastVersion = -1;
+const GID = location.pathname.split('/').filter(Boolean)[1];
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const API = '/api/g/' + GID;
+const TQ = TOKEN ? 't=' + encodeURIComponent(TOKEN) : '';
+const withT = (url) => url + (TQ ? (url.includes('?') ? '&' : '?') + TQ : '');
+const view = { timeline: null, seenUndo: null, historyOpen: false, history: [], historyKey: null, confirmAt: null, error: '' };
+let scale = 12, margin = 22;
+const local = { decisionKey: null, pos: {}, orig: {}, kind: 'normal', dragging: null, dragStart: null, shift: false, hover: null, sending: false,
+                selected: new Set(), band: null };
+
+const HELP = 'Survole une figurine pour voir son unité. Pendant un mouvement : glisse une figurine, encadre-en plusieurs à la souris pour les déplacer ensemble, <kbd>Maj</kbd> + glisser déplace toute l’unité, <kbd>R</kbd> / <kbd>Maj</kbd>+<kbd>R</kbd> pivote une coque de 15° (pivoter ne compte pas dans la distance), <kbd>Échap</kbd> annule.';
+const SIDE_FR = { attacker: 'attaquant', defender: 'défenseur' };
+const PHASE_FR = { deployment: 'déploiement', scouts: 'scouts', command: 'commandement', movement: 'mouvement', shooting: 'tir', charge: 'charge', fight: 'combat', end_turn: 'fin de tour', end_battle: 'fin de bataille' };
+const COL = { attacker: '#c83c3c', defender: '#3c6ec8' };
+
+// ------------------------------------------------------------ réseau
+async function getJSON(url) { const r = await fetch(url); return r.json(); }
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return r.json();
+}
+async function send(payload) {
+  if (local.sending) return;
+  local.sending = true;
+  try {
+    const res = await postJSON(withT(API + '/action'), payload);
+    if (!res.ok) { view.error = res.error || 'refusé'; $('error').textContent = view.error; }
+  } finally { local.sending = false; }
+}
+async function undo(to) {
+  const res = await postJSON(withT(API + '/undo'), { to: to === undefined ? null : to });
+  if (!res.ok) { view.error = res.error || 'annulation refusée'; $('error').textContent = view.error; }
+  view.confirmAt = null;
+}
+
+async function poll() {
+  try {
+    const st = await getJSON(withT(API + '/state?since=' + logLen));
+    if (st.ok === false) { $('dtitle').textContent = 'Partie introuvable'; $('dhint').textContent = st.error || ''; return; }
+    if (view.timeline !== null && st.timeline !== view.timeline && logLen > 0) {
+      // une annulation a réécrit l'histoire : on repart du journal complet
+      view.timeline = st.timeline; logLen = 0; $('log').innerHTML = ''; lastVersion = -1;
+      setTimeout(poll, 0); return;
+    }
+    view.timeline = st.timeline;
+    if (st.version !== lastVersion) {
+      lastVersion = st.version;
+      S = st;
+      view.error = '';
+      appendLog(st.log, st.log_since);
+      onNewState();
+      render();
+    }
+  } catch (e) { if (!(e instanceof TypeError && String(e).includes('fetch'))) console.error(e); /* sinon serveur indisponible : on réessaie */ }
+  setTimeout(poll, 300);
+}
+
+// ------------------------------------------------------------ état → UI
+function unitById(id) { return S.units.find(u => u.id === id); }
+function humanTurn() { return S && S.pending && S.pending.side === S.human_side && !S.game_over; }
+const PLACING_KINDS = new Set(['deploy', 'move', 'advance_move', 'charge_move', 'scout', 'disembark']);
+function isPlacing() { const p = S && S.pending; return humanTurn() && p.unit_id && PLACING_KINDS.has(p.kind); }
+
+function onNewState() {
+  const p = S.pending;
+  if (local.hover) {  // l'objet survolé vient de l'instantané précédent : on le relit dans le nouveau
+    const hu = unitById(local.hover.u.id); const hm = hu && hu.models.find(q => q.id === local.hover.m.id);
+    local.hover = hm && hm.alive && (hu.deployed || (p && p.unit_id === hu.id)) ? { u: hu, m: hm } : null;
+  }
+  const key = p ? [p.kind, p.unit_id, S.battle_round, S.phase, S.log_length].join('|') : null;
+  if (p && key !== local.decisionKey) {
+    local.decisionKey = key;
+    local.pos = {}; local.orig = {}; local.kind = 'normal'; local.selected = new Set(); local.dragging = null; local.band = null;
+    if (p.unit_id && PLACING_KINDS.has(p.kind)) {
+      const u = unitById(p.unit_id);
+      const alive = u.models.filter(m => m.alive);
+      if (p.kind === 'deploy') {
+        const z = layout.deployment_zones[u.side];
+        let cx = z.reduce((a, v) => a + v[0], 0) / z.length, cy = z.reduce((a, v) => a + v[1], 0) / z.length;
+        // parmi les positions légales proposées, la plus proche du centre de la zone
+        const cands = p.options.filter(o => o.x !== undefined);
+        if (cands.length) { const zc = [cx, cy]; const best = cands.reduce((a, o) => Math.hypot(o.x - zc[0], o.y - zc[1]) < Math.hypot(a.x - zc[0], a.y - zc[1]) ? o : a); cx = best.x; cy = best.y; }
+        const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length;
+        alive.forEach(m => { local.pos[m.id] = withAngle(m, [cx + m.x - mx, cy + m.y - my]); });
+      } else if (p.kind === 'disembark') {
+        local.proposal = 0;
+        applyProposal(u, 0);
+      } else {
+        alive.forEach(m => { local.pos[m.id] = withAngle(m, [m.x, m.y]); });
+      }
+      alive.forEach(m => { local.orig[m.id] = [...local.pos[m.id]]; });
+      if (p.kind === 'advance_move') local.kind = 'advance_move';
+      if (p.kind === 'charge_move') local.kind = 'charge';
+    }
+  }
+  if (!p) local.decisionKey = null;
+  $('stepmode').checked = !!S.step_mode;
+  renderStatus(); renderDecision(); renderBanner(); refreshHistory();
+  rememberGame();
+}
+
+// ------------------------------------------------------------ empreintes (rond, ovale, coque)
+// Une empreinte = cœur rectangulaire (demi-côtés hx, hy, orienté par a) dilaté du rayon r :
+// socle rond (hx = hy = 0), ovale (hy = 0), coque de véhicule (r = 0).
+const isRound = m => !(m.hx > 0 || m.hy > 0);
+function withAngle(m, xy) { return isRound(m) ? xy : [xy[0], xy[1], m.a || 0]; }
+function poseOf(u, m) {
+  if (S.pending && S.pending.unit_id === u.id && local.pos[m.id]) { const p = local.pos[m.id]; return [p[0], p[1], p.length > 2 ? p[2] : (m.a || 0)]; }
+  return [m.x, m.y, m.a || 0];
+}
+function shapePath(m, x, y, a, grow) {
+  // chemin canvas de l'empreinte posée en (x, y, a), élargie de ``grow`` pouces
+  const R = (m.r + (grow || 0)) * scale;
+  ctx.beginPath();
+  if (isRound(m)) { ctx.arc(X(x), Y(y), Math.max(R, 0.5), 0, Math.PI * 2); return; }
+  const hx = m.hx * scale, hy = m.hy * scale, c = Math.cos(a), s = Math.sin(a);
+  const P = (lx, ly) => [X(x) + lx * c - ly * s, Y(y) + lx * s + ly * c];
+  const corners = [[hx, hy, 0], [-hx, hy, Math.PI / 2], [-hx, -hy, Math.PI], [hx, -hy, 1.5 * Math.PI]];
+  let first = true;
+  corners.forEach(([cx, cy, a0]) => {
+    const steps = R > 0 ? 6 : 0;
+    for (let k = 0; k <= steps; k++) {
+      const t = a0 + (steps ? k / steps : 0) * Math.PI / 2;
+      const [px, py] = P(cx + R * Math.cos(t), cy + R * Math.sin(t));
+      if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+    }
+  });
+  ctx.closePath();
+}
+function inShape(m, x, y, a, bx, by, tol) {
+  const dx = bx - x, dy = by - y, c = Math.cos(a), s = Math.sin(a);
+  const lx = dx * c + dy * s, ly = -dx * s + dy * c;
+  return Math.hypot(Math.max(Math.abs(lx) - (m.hx || 0), 0), Math.max(Math.abs(ly) - (m.hy || 0), 0)) <= m.r + tol;
+}
+function innerSize(m) { return m.r + (m.hy || 0); }
+function angDelta(a0, a1) { const d = a1 - a0; return Math.atan2(Math.sin(d), Math.cos(d)); }
+function moveDist(m, o, n) {
+  // V11 (03.01) : on mesure depuis le même point du socle, pivoter ne compte pas → déplacement du centre
+  return Math.hypot(n[0] - o[0], n[1] - o[1]);
+}
+
+// débarquement : placements proposés par le moteur (couronnes autour de la coque, formations)
+function disembarkProposals() { return (S.pending.options || []).filter(o => o.disembark && !o.stay); }
+function applyProposal(u, k) {
+  const props = disembarkProposals(); const alive = u.models.filter(m => m.alive);
+  if (!props.length) {
+    // aucune place légale proposée : on pose la formation à côté du transport, à placer à la main
+    const t = unitById(S.pending.target_id).models.find(m => m.alive) || unitById(S.pending.target_id).models[0];
+    const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length;
+    const off = (t.hx || 0) + (t.hy || 0) + t.r + 1.5;
+    alive.forEach(m => { local.pos[m.id] = withAngle(m, [t.x + m.x - mx, t.y + off + m.y - my]); local.orig[m.id] = [...local.pos[m.id]]; });
+    return;
+  }
+  const o = props[k % props.length];
+  if (o.positions) alive.forEach(m => { local.pos[m.id] = withAngle(m, o.positions[m.id]); });
+  else { const mx = alive.reduce((a, m) => a + m.x, 0) / alive.length, my = alive.reduce((a, m) => a + m.y, 0) / alive.length; alive.forEach(m => { local.pos[m.id] = withAngle(m, [o.x + m.x - mx, o.y + m.y - my]); }); }
+  alive.forEach(m => { local.orig[m.id] = [...local.pos[m.id]]; });
+}
+
+function renderStatus() {
+  $('round').textContent = S.battle_round || 'déploiement';
+  $('phase').textContent = PHASE_FR[S.phase] || S.phase;
+  $('scoreA').textContent = S.scores.attacker; $('scoreD').textContent = S.scores.defender;
+  if (S.cp) { $('cpA').textContent = S.cp.attacker; $('cpD').textContent = S.cp.defender; }
+  const me = S.human_side;
+  const P = S.players || {};
+  $('nameA').textContent = P.attacker ? `${P.attacker.name}${P.attacker.kind === 'bot' ? ' (bot)' : ''} — attaquant` : 'Attaquant';
+  $('nameD').textContent = P.defender ? `${P.defender.name}${P.defender.kind === 'bot' ? ' (bot)' : ''} — défenseur` : 'Défenseur';
+  const title = esc((S.game && S.game.title) || '40kPlayer');
+  if (me) {
+    const fac = (S.factions && S.factions[me]) || '';
+    $('title').innerHTML = `${title} <span class="pill ${me === 'attacker' ? 'att' : 'def'}">tu joues ${SIDE_FR[me]}${fac ? ' — ' + esc(fac) : ''}</span>`;
+  } else $('title').innerHTML = `${title} <span class="pill">spectateur</span>`;
+  $('turn').textContent = S.game_over ? 'partie terminée' : (S.battle_round ? `tour : ${SIDE_FR[S.side_to_move]}` : '');
+  $('steplabel').style.display = (S.vs_bot && me) ? '' : 'none';
+  $('undobtn').style.display = me ? '' : 'none';
+  $('undobtn').disabled = !S.can_undo;
+  $('histbtn').textContent = `Historique (${S.history_length || 0})`;
+  document.title = (humanTurn() ? '● À toi — ' : '') + ((S.game && S.game.title) || '40kPlayer');
+}
+
+function btn(label, onclick, cls) { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = onclick; return b; }
+
+function moveKindForSend(u) { return u.flags.engaged ? (u.flags.battle_shocked ? 'desperate' : 'fall_back') : (local.kind === 'advance_move' ? 'advance_move' : 'normal'); }
+
+function renderDecision() {
+  const box = $('dbtns'); box.innerHTML = ''; $('extra').innerHTML = ''; $('dobs').textContent = '';
+  $('error').textContent = view.error || '';
+  if (S.engine_error) { $('dtitle').textContent = 'Erreur du moteur'; $('dhint').textContent = S.engine_error; return; }
+  if (S.game_over) {
+    const r = S.result; $('dtitle').textContent = r ? (r.winner ? `Victoire ${SIDE_FR[r.winner]}` : 'Égalité') : 'Partie terminée';
+    $('dhint').textContent = r ? `attaquant ${r.scores.attacker} VP — défenseur ${r.scores.defender} VP` : '';
+    box.appendChild(btn('Retour à l’accueil', () => { location.href = '/'; }, 'primary'));
+    box.appendChild(btn('Télécharger la partie (JSON)', () => { location.href = API + '/record'; }));
+    box.appendChild(btn('Export entraînement (JSON)', () => { location.href = API + '/export'; }));
+    if (S.human_side && S.can_undo) box.appendChild(btn('↶ Annuler la dernière action', () => undo()));
+    return;
+  }
+  const p = S.pending;
+  if (!p || p.side !== S.human_side) {
+    const who = p && S.players && S.players[p.side];
+    $('dtitle').textContent = who ? `${who.name} (${SIDE_FR[p.side]}) joue…` : 'L’adversaire joue…';
+    if (!S.human_side) $('dhint').textContent = 'Tu regardes la partie (lien de spectateur) : le plateau et le journal se mettent à jour en direct.';
+    else if (S.vs_bot) $('dhint').textContent = S.step_mode ? 'Chaque action du bot s’arrêtera ici pour que tu la valides.' : 'Le journal défile en bas à mesure de ses actions.';
+    else $('dhint').textContent = 'Le plateau et le journal se mettent à jour à chacune de ses actions. Tu peux fermer la page : la partie est sauvegardée, ton lien la rouvre.';
+    return;
+  }
+  const u = p.unit_id ? unitById(p.unit_id) : null;
+  const uname = u ? `${u.name} [${u.id}]` : '';
+  if (p.kind === 'observe') {
+    $('dtitle').textContent = `Adversaire — ${PHASE_FR[p.phase] || p.phase}`;
+    $('dobs').textContent = p.note;
+    $('dhint').innerHTML = 'Regarde le plateau et le journal, puis <kbd>Continuer</kbd> (ou <kbd>Espace</kbd>). C’est ici que viendront les stratagèmes réactifs.';
+    box.appendChild(btn('Continuer', () => send({ type: 'continue' }), 'primary'));
+  } else if (p.kind === 'select_unit') {
+    const ph = PHASE_FR[p.phase] || p.phase;
+    $('dtitle').textContent = `${ph.charAt(0).toUpperCase() + ph.slice(1)} : quelle unité ?`;
+    $('dhint').textContent = 'Clique sur une de tes unités sur le plateau, ou sur son bouton. Tu choisis l’ordre.';
+    p.options.forEach(o => {
+      if (o.end_phase) box.appendChild(btn(p.phase === 'movement' ? 'Terminer la phase (les autres restent immobiles)' : 'Terminer la phase', () => send({ type: 'end_phase' }), 'warn'));
+      else box.appendChild(btn(o.label, () => send({ type: 'select_unit', unit_id: o.unit_id })));
+    });
+    const inel = Object.entries(p.ineligible || {});
+    if (inel.length) $('extra').innerHTML = inel.map(([id, v]) => `<span class="bad">${v.name} [${id}]</span> : ${v.reason}`).join('<br>');
+  } else if (p.kind === 'deploy') {
+    $('dtitle').textContent = `Déploiement : ${uname}`;
+    $('dhint').innerHTML = 'Glisse chaque figurine, encadre-en plusieurs pour les bouger ensemble, <kbd>Maj</kbd> + glisser pour toute l’unité. Tout le socle dans ta zone ; cohérence 2" / 9".';
+    box.appendChild(btn('Valider le déploiement', () => send({ type: 'deploy_models', unit_id: u.id, positions: local.pos }), 'primary'));
+    p.options.filter(o => o.embark && o.transport_id).forEach(o => box.appendChild(btn(`Commencer à bord : ${o.label.replace('Embarquer dans ', '')}`, () => send({ type: 'option', index: o.index }))));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+  } else if (p.kind === 'move') {
+    $('dtitle').textContent = `Mouvement : ${uname} — M ${u.move}"`;
+    const eng = u.flags.engaged;
+    $('dhint').innerHTML = eng ? (u.flags.battle_shocked ? 'Unité engagée et battle-shocked : Desperate Escape (un jet de danger par figurine, tu peux traverser l’ennemi) ou reste immobile.' : 'Unité engagée : reste immobile ou replie-toi sans traverser l’ennemi (glisse hors de la portée d’engagement, puis valide).')
+      : 'Chaque figurine ≤ M (pivoter ne compte pas) ; on traverse ses propres figurines mais pas les socles ennemis (un monstre / véhicule passe sur l’infanterie) ; on peut passer à 2" d’un ennemi mais pas y finir. <kbd>Échap</kbd> annule le glissement en cours.';
+    if (!eng) box.appendChild(btn('Advance (lancer le D6)', () => send({ type: 'declare_advance', unit_id: u.id })));
+    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id })));
+    box.appendChild(btn(eng ? 'Valider le repli' : 'Valider le déplacement', () => send({ type: 'model_move', unit_id: u.id, kind: moveKindForSend(u), positions: local.pos }), 'primary'));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+    updateMoveExtra();
+  } else if (p.kind === 'advance_move') {
+    $('dtitle').textContent = `Advance : ${uname} — jusqu’à ${p.max_distance}" par figurine`;
+    $('dhint').textContent = 'Le D6 est lancé (voir le journal). Place tes figurines puis valide. Après une Advance, seules les armes Assault tirent (ou Thrill Seekers) et pas de charge.';
+    box.appendChild(btn('Valider', () => send({ type: 'model_move', unit_id: u.id, kind: 'advance_move', positions: local.pos }), 'primary'));
+    box.appendChild(btn('Rester immobile', () => send({ type: 'stationary', unit_id: u.id })));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+    updateMoveExtra();
+  } else if (p.kind === 'shoot') {
+    $('dtitle').textContent = 'Tir : ' + uname;
+    $('dhint').textContent = 'Choisis la cible (bouton ou clic sur l’unité ennemie). Toutes les armes éligibles tirent dessus. Une unité engagée avec une de tes unités ne peut pas être visée (sauf pistolets de l’unité engagée) ; une unité Hidden (infanterie dont chaque figurine touche un décor) n’est ciblable qu’à 15" ou moins.';
+    const notes = [];
+    p.options.forEach(o => {
+      if (o.target_id === null || o.target_id === undefined) box.appendChild(btn('Ne pas tirer', () => send({ type: 'option', index: o.index }), 'warn'));
+      else {
+        box.appendChild(btn(`${o.label} [${o.target_id}] — ${o.distance}"` + (o.hidden ? ' — Hidden (≤ 15")' : ''), () => send({ type: 'option', index: o.index })));
+        if (o.outside_terrain && o.outside_terrain.length) notes.push(`<span class="bad">${o.target_id}</span> n’est pas Hidden : ${o.outside_terrain.join(', ')} ne ${o.outside_terrain.length > 1 ? 'touchent' : 'touche'} aucun décor (en orange).`);
+      }
+    });
+    if (notes.length) $('extra').innerHTML = notes.join('<br>');
+  } else if (p.kind === 'charge_declare') {
+    $('dtitle').textContent = 'Charge : ' + uname;
+    $('dhint').textContent = 'Déclare la charge : 2D6, puis tu choisis parmi les unités atteignables socle à socle (double 1 = échec). ' + (p.note || '');
+    p.options.forEach(o => {
+      if (o.declare_charge) box.appendChild(btn(o.label, () => send({ type: 'declare_charge', unit_id: u.id }), 'primary'));
+      else box.appendChild(btn('Ne pas charger', () => send({ type: 'option', index: o.index }), 'warn'));
+    });
+  } else if (p.kind === 'charge_target') {
+    $('dtitle').textContent = `Charge : ${uname} — jet ${p.max_distance}`;
+    $('dhint').textContent = 'Plusieurs unités sont atteignables : choisis une cible, ou plusieurs (l’unité devra finir engagée à 2" avec chacune, une figurine au moins socle à socle).';
+    p.options.forEach(o => box.appendChild(btn(o.targets ? `${o.label} — jusqu’à ${o.distance}"` : `${o.label} [${o.target_id}] — socle à socle à ${o.distance}"`, () => send({ type: 'option', index: o.index }))));
+  } else if (p.kind === 'charge_move') {
+    const tids = (p.targets && p.targets.length) ? p.targets : [p.target_id];
+    $('dtitle').textContent = `Charge : ${uname} → ${tids.map(id => `${unitById(id).name} [${id}]`).join(' + ')} — jet ${p.max_distance}`;
+    $('dhint').textContent = 'Place tes figurines (≤ jet chacune) : au moins une socle à socle avec une cible, l’unité engagée (2") avec chaque cible ; celles qui peuvent arriver à 1" (anneau) doivent le faire, sinon à 2", sinon finir plus près ; pas de figurine à 2" d’une autre unité ennemie ; on ne traverse pas les socles ennemis ; cohérence.';
+    box.appendChild(btn('Valider la charge', () => send({ type: 'model_move', unit_id: u.id, kind: 'charge', positions: local.pos }), 'primary'));
+    box.appendChild(btn('Placement automatique', () => send({ type: 'auto_charge', unit_id: u.id })));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+    updateMoveExtra();
+  } else if (p.kind === 'fight') {
+    $('dtitle').textContent = 'Combat : quelle unité active-t-on ?';
+    $('dhint').textContent = 'Pile-in 3", attaques des figurines à 2" de l’ennemi, consolidation 3" — le moteur s’occupe des déplacements.';
+    p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }))));
+  } else if (p.kind === 'scout') {
+    $('dtitle').textContent = `Scouts : ${uname} — jusqu’à ${p.max_distance}"`;
+    $('dhint').textContent = `Avant le round 1 : mouvement normal de ${p.max_distance}" au plus par figurine, à finir à plus de 9" de toute figurine ennemie.`;
+    box.appendChild(btn('Valider le mouvement de scout', () => send({ type: 'model_move', unit_id: u.id, kind: 'scout', positions: local.pos }), 'primary'));
+    box.appendChild(btn('Pas de mouvement de scout', () => send({ type: 'stationary', unit_id: u.id })));
+    box.appendChild(btn('Réinitialiser', resetLocal));
+    updateMoveExtra();
+  } else if (p.kind === 'disembark') {
+    $('dtitle').textContent = `Débarquer : ${uname} de ${p.target_id}`;
+    $('dhint').textContent = (p.note || '') + '. Déplace les figurines si tu veux, puis valide.';
+    const stay = p.options.find(o => o.stay);
+    box.appendChild(btn('Débarquer ici', () => send({ type: 'disembark_models', unit_id: u.id, positions: local.pos }), 'primary'));
+    if (disembarkProposals().length > 1) box.appendChild(btn('Autre placement proposé', () => { local.proposal = (local.proposal || 0) + 1; applyProposal(u, local.proposal); render(); }));
+    if (stay) box.appendChild(btn('Rester à bord', () => send({ type: 'option', index: stay.index }), 'warn'));
+    if (!disembarkProposals().length) $('extra').textContent = `Aucune place libre proposée à ${p.max_distance}" du transport (tout est occupé ou à portée d’engagement) : place les figurines à la main, ou reste à bord.`;
+  } else if (p.kind === 'embark') {
+    $('dtitle').textContent = `Embarquer : ${uname} ?`;
+    $('dhint').textContent = p.note || '';
+    p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }), o.transport_id ? 'primary' : '')));
+  } else if (p.kind === 'oath') {
+    $('dtitle').textContent = 'Oath of Moment : quelle cible ?';
+    $('dhint').textContent = 'Relance des touches contre cette unité jusqu’à ta prochaine phase de commandement.';
+    p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }))));
+  } else {
+    $('dtitle').textContent = p.kind; $('dhint').textContent = '';
+    p.options.forEach(o => box.appendChild(btn(o.label, () => send({ type: 'option', index: o.index }))));
+  }
+}
+
+function updateMoveExtra() {
+  const p = S.pending; if (!p || !p.max_distance || p.kind === 'disembark') return;
+  const lines = [];
+  const u = unitById(p.unit_id);
+  for (const [mid, o] of Object.entries(local.orig)) {
+    const m = u.models.find(q => q.id === mid); const n = local.pos[mid]; const d = moveDist(m, o, n);
+    if (d > 0.05) lines.push(`${mid} : ${d.toFixed(1)}" / ${p.max_distance}"` + (d > p.max_distance + 1e-6 ? ' — trop loin' : ''));
+  }
+  $('extra').innerHTML = lines.length ? lines.map(l => l.includes('trop loin') ? `<span class="bad">${l}</span>` : l).join('<br>') : 'Aucune figurine déplacée.';
+}
+
+function resetLocal() { for (const k in local.orig) local.pos[k] = [...local.orig[k]]; local.selected = new Set(); render(); if (S.pending && S.pending.max_distance) updateMoveExtra(); }
+
+// ------------------------------------------------------------ journal
+function appendLog(lines, since) {
+  if (since === 0 && logLen > 0) { $('log').innerHTML = ''; }
+  const box = $('log');
+  lines.forEach(line => {
+    const d = document.createElement('div');
+    if (line.startsWith('=====')) d.className = 'round';
+    else if (line.startsWith('Score') || line.startsWith('Fin de bataille')) d.className = 'score';
+    else if (line.startsWith('Tir') || line.startsWith('Combat') || line.startsWith('Charge')) d.className = 'combat';
+    else if (line.startsWith('      ')) d.className = 'detail';
+    else if (line.startsWith('ERREUR')) d.className = 'err';
+    d.textContent = line;
+    box.appendChild(d);
+  });
+  logLen = since + lines.length;
+  box.scrollTop = box.scrollHeight;
+}
+
+// ------------------------------------------------------------ canvas
+function fit() {
+  const W = window.innerWidth - Math.min(560, Math.max(380, window.innerWidth * 0.36)) - 16;
+  const H = window.innerHeight - 16;
+  const bw = layout ? layout.board[0] : 44, bh = layout ? layout.board[1] : 60;
+  scale = Math.max(6, Math.min((W - 2 * margin) / bw, (H - 2 * margin) / bh));
+  canvas.width = Math.round(bw * scale + 2 * margin);
+  canvas.height = Math.round(bh * scale + 2 * margin);
+  render();
+}
+const X = x => margin + x * scale, Y = y => margin + y * scale;
+const toBoard = (px, py) => [(px - margin) / scale, (py - margin) / scale];
+
+function modelPos(u, m) {
+  if (S.pending && S.pending.unit_id === u.id && local.pos[m.id]) return local.pos[m.id];
+  return [m.x, m.y];
+}
+
+function render() {
+  if (!layout) return;
+  const [bw, bh] = layout.board;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#f4f1ea'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#e8e4da'; ctx.fillRect(X(0), Y(0), bw * scale, bh * scale);
+  ctx.lineWidth = 1; ctx.font = '10px sans-serif'; ctx.fillStyle = '#555'; ctx.textAlign = 'center';
+  for (let x = 0; x <= bw; x++) { ctx.strokeStyle = x % 4 ? '#d9d5cb' : '#c4c0b6'; ctx.beginPath(); ctx.moveTo(X(x), Y(0)); ctx.lineTo(X(x), Y(bh)); ctx.stroke(); if (x % 4 === 0) { ctx.fillText(x, X(x), 12); ctx.fillText(x, X(x), canvas.height - 4); } }
+  ctx.textAlign = 'right';
+  for (let y = 0; y <= bh; y++) { ctx.strokeStyle = y % 4 ? '#d9d5cb' : '#c4c0b6'; ctx.beginPath(); ctx.moveTo(X(0), Y(y)); ctx.lineTo(X(bw), Y(y)); ctx.stroke(); if (y % 4 === 0) { ctx.fillText(y, margin - 4, Y(y) + 3); ctx.textAlign = 'left'; ctx.fillText(y, X(bw) + 4, Y(y) + 3); ctx.textAlign = 'right'; } }
+  for (const [side, poly] of Object.entries(layout.deployment_zones)) {
+    ctx.fillStyle = side === 'attacker' ? 'rgba(150,35,30,0.35)' : 'rgba(55,90,125,0.35)';
+    ctx.beginPath(); poly.forEach((v, i) => i ? ctx.lineTo(X(v[0]), Y(v[1])) : ctx.moveTo(X(v[0]), Y(v[1]))); ctx.closePath(); ctx.fill();
+  }
+  if (layout.territory_line) { const [a, b] = layout.territory_line; ctx.strokeStyle = '#333'; ctx.setLineDash([6, 6]); ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1])); ctx.lineTo(X(b[0]), Y(b[1])); ctx.stroke(); ctx.setLineDash([]); }
+  layout.terrain.forEach(t => {
+    const [x0, y0, x1, y1] = t.rect;
+    ctx.fillStyle = t.kind === 'ruin' ? 'rgba(185,185,188,0.95)' : 'rgba(160,160,164,0.95)';
+    ctx.fillRect(X(x0), Y(y0), (x1 - x0) * scale, (y1 - y0) * scale);
+    ctx.lineWidth = 3; ctx.strokeStyle = t.density === 'dense' ? '#2d6e64' : '#b98c1e';
+    ctx.strokeRect(X(x0), Y(y0), (x1 - x0) * scale, (y1 - y0) * scale);
+    ctx.fillStyle = '#333'; ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.fillText(t.id + (t.density === 'dense' ? ' D' : ' L'), X(x0) + 4, Y(y0) + 11);
+  });
+  const rr = layout.rules;
+  layout.objectives.forEach(o => {
+    const st = S ? S.objectives.find(q => q.id === o.id) : null;
+    const who = st && st.controller;
+    const col = who ? COL[who] : '#666';
+    const label = o.id + (o.terrain_id ? ` (${o.terrain_id})` : '') + (st ? ` ${st.levels.attacker}-${st.levels.defender}` : '');
+    ctx.font = '10px sans-serif'; ctx.textAlign = 'left';
+    if (o.rect) {
+      // V11 (14.01) : l'objectif est l'empreinte de décor désignée par la carte ; on la contrôle
+      // avec des figurines dont le socle la touche
+      const [x0, y0, x1, y1] = o.rect, w = (x1 - x0) * scale, h = (y1 - y0) * scale;
+      ctx.fillStyle = who ? (who === 'attacker' ? 'rgba(150,35,30,0.18)' : 'rgba(55,90,125,0.18)') : 'rgba(255,255,255,0.12)';
+      ctx.fillRect(X(x0), Y(y0), w, h);
+      ctx.lineWidth = 4; ctx.strokeStyle = col; ctx.setLineDash(who ? [] : [7, 5]);
+      ctx.strokeRect(X(x0) + 3, Y(y0) + 3, w - 6, h - 6); ctx.setLineDash([]);
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_marker_radius * scale * 0.6, 0, Math.PI * 2); ctx.fill();
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(X(o.x) - tw / 2 - 3, Y(o.y) - rr.objective_marker_radius * scale - 14, tw + 6, 13);
+      ctx.fillStyle = '#222'; ctx.fillText(label, X(o.x) - tw / 2, Y(o.y) - rr.objective_marker_radius * scale - 4);
+      return;
+    }
+    ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.setLineDash(who ? [] : [4, 4]);
+    ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_control_radius * scale, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(o.x), Y(o.y), rr.objective_marker_radius * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#222';
+    ctx.fillText(label, X(o.x) + rr.objective_marker_radius * scale + 3, Y(o.y) - 4);
+  });
+  if (!S) return;
+  const p = S.pending, placing = isPlacing(), active = placing ? p.unit_id : null;
+  const selecting = humanTurn() && p.kind === 'select_unit';
+  const selectable = selecting ? new Set(p.options.filter(o => o.unit_id).map(o => o.unit_id)) : new Set();
+  if (placing) {
+    S.units.filter(u => u.side !== S.human_side && !u.destroyed && u.deployed).forEach(u => u.models.filter(m => m.alive).forEach(m => {
+      const isTarget = p.kind === 'charge_move' && (u.id === p.target_id || (p.targets || []).includes(u.id));
+      ctx.strokeStyle = isTarget ? 'rgba(40,160,60,0.6)' : 'rgba(200,60,60,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      shapePath(m, m.x, m.y, m.a || 0, isTarget ? 1 : rr.engagement_range); ctx.stroke(); ctx.setLineDash([]);
+    }));
+    if (p.kind === 'disembark' && p.target_id) {
+      const t = unitById(p.target_id);
+      t.models.forEach(m => { ctx.strokeStyle = 'rgba(40,160,60,0.7)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); shapePath(m, m.x, m.y, m.a || 0, p.max_distance || 3); ctx.stroke(); ctx.setLineDash([]); });
+    }
+    if (p.kind !== 'deploy' && p.kind !== 'disembark' && p.max_distance) {
+      for (const [mid, o] of Object.entries(local.orig)) {
+        ctx.strokeStyle = 'rgba(40,40,40,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+        ctx.beginPath(); ctx.arc(X(o[0]), Y(o[1]), p.max_distance * scale, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+    // fantômes des positions de départ et traits de déplacement
+    const u = unitById(active);
+    u.models.filter(m => m.alive && local.orig[m.id]).forEach(m => {
+      const o = local.orig[m.id], n = local.pos[m.id];
+      const d = moveDist(m, o, n);
+      if (d > 0.02) {
+        ctx.strokeStyle = 'rgba(60,60,60,0.5)'; ctx.lineWidth = 1; ctx.setLineDash([]);
+        shapePath(m, o[0], o[1], o.length > 2 ? o[2] : (m.a || 0), 0); ctx.stroke();
+        ctx.strokeStyle = 'rgba(20,20,20,0.7)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(X(o[0]), Y(o[1])); ctx.lineTo(X(n[0]), Y(n[1])); ctx.stroke();
+      }
+    });
+  }
+  // figurines qui empêchent leur unité d'être Hidden (décision de tir en cours)
+  const overhang = new Set();
+  if (p && p.kind === 'shoot') p.options.forEach(o => (o.outside_terrain || []).forEach(id => overhang.add(id)));
+  const order = S.units.filter(u => !u.destroyed && (u.deployed || u.id === active)).sort((a, b) => (a.id === active) - (b.id === active) || (a.side === S.human_side) - (b.side === S.human_side));
+  order.forEach(u => {
+    const alive = u.models.filter(m => m.alive);
+    alive.forEach(m => {
+      const [x, y, a] = poseOf(u, m);
+      const r = innerSize(m) * scale;
+      shapePath(m, x, y, a, 0);
+      ctx.fillStyle = COL[u.side]; ctx.fill();
+      let outline = '#111', width = 1.2;
+      if (overhang.has(m.id)) { outline = '#ff9a1f'; width = 2.5; }
+      if (u.id === active) {
+        outline = '#f2c744'; width = 3;
+        const o = local.orig[m.id];
+        if (o && p.max_distance && p.kind !== 'disembark' && moveDist(m, o, local.pos[m.id]) > p.max_distance + 1e-6) outline = '#ff2020';
+      } else if (selectable.has(u.id)) { outline = '#f2c744'; width = 2.5; }
+      ctx.lineWidth = width; ctx.strokeStyle = outline; ctx.stroke();
+      if (!isRound(m)) {  // avant de la coque
+        const c = Math.cos(a), s = Math.sin(a), L = (m.hx + m.r) * scale;
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X(x), Y(y)); ctx.lineTo(X(x) + c * L * 0.85, Y(y) + s * L * 0.85); ctx.stroke();
+      }
+      if (local.selected.has(m.id)) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]); shapePath(m, x, y, a, 4 / scale); ctx.stroke(); ctx.setLineDash([]); }
+      if (m.wounds < m.max_wounds) { ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(X(x), Y(y), r * 0.45, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = `${Math.min(16, Math.max(8, r))}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(m.wounds, X(x), Y(y) + Math.min(16, Math.max(8, r)) * 0.35); }
+      if (S.oath_target === u.id) { ctx.strokeStyle = '#f2c744'; ctx.setLineDash([2, 2]); shapePath(m, x, y, a, 3 / scale); ctx.stroke(); ctx.setLineDash([]); }
+    });
+    if (alive.length) {
+      const cx = alive.reduce((a, m) => a + modelPos(u, m)[0], 0) / alive.length, cy = alive.reduce((a, m) => a + modelPos(u, m)[1], 0) / alive.length;
+      ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      const label = `${u.id} ` + (u.starting_strength === 1 ? `${alive[0].wounds}/${alive[0].max_wounds} PV` : `${u.strength}/${u.starting_strength}`) + (u.flags.battle_shocked ? ' BS' : '') + (u.flags.hidden ? ' caché' : '') + (u.passengers && u.passengers.length ? ` [à bord : ${u.passengers.join(', ')}]` : '');
+      const w = ctx.measureText(label).width + 6; ctx.fillRect(X(cx) - w / 2, Y(cy) - 2.2 * scale - 8, w, 13);
+      ctx.fillStyle = '#111'; ctx.fillText(label, X(cx), Y(cy) - 2.2 * scale + 2);
+    }
+  });
+  // distances des figurines déplacées
+  if (placing && p.kind !== 'disembark') {
+    const u = unitById(active);
+    ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
+    u.models.filter(m => m.alive && local.orig[m.id]).forEach(m => {
+      const o = local.orig[m.id], n = local.pos[m.id];
+      const d = moveDist(m, o, n);
+      if (d > 0.05) {
+        const txt = `${d.toFixed(1)}"`; const w = ctx.measureText(txt).width + 6;
+        const off = innerSize(m) * scale;
+        ctx.fillStyle = (p.max_distance && d > p.max_distance + 1e-6) ? 'rgba(200,30,30,0.9)' : 'rgba(0,0,0,0.75)';
+        ctx.fillRect(X(n[0]) + off + 2, Y(n[1]) - 7, w, 14); ctx.fillStyle = '#fff'; ctx.fillText(txt, X(n[0]) + off + 5, Y(n[1]) + 4);
+      }
+    });
+  }
+  if (local.band) {
+    const b = local.band; ctx.strokeStyle = '#f2c744'; ctx.fillStyle = 'rgba(242,199,68,0.15)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.fillRect(X(b.x0), Y(b.y0), (b.x1 - b.x0) * scale, (b.y1 - b.y0) * scale); ctx.strokeRect(X(b.x0), Y(b.y0), (b.x1 - b.x0) * scale, (b.y1 - b.y0) * scale); ctx.setLineDash([]);
+  }
+  if (local.hover && !local.dragging && !local.band) {
+    const { u, m } = local.hover; const [x, y] = modelPos(u, m);
+    ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
+    // infobulle minimale : nom de l'unité et PV de la figurine
+    const txt = `${u.name} [${u.id}] — ${m.wounds}/${m.max_wounds} PV`;
+    const w = ctx.measureText(txt).width + 8; ctx.fillRect(X(x) + 8, Y(y) - 26, w, 16); ctx.fillStyle = '#fff'; ctx.fillText(txt, X(x) + 12, Y(y) - 14);
+  }
+}
+
+function modelAt(px, py, onlyUnit) {
+  if (!S) return null;
+  const [bx, by] = toBoard(px, py);
+  let best = null, bestD = 1e9;
+  S.units.filter(u => !u.destroyed && (onlyUnit ? u.id === onlyUnit : (u.deployed || (S.pending && S.pending.unit_id === u.id)))).forEach(u => u.models.filter(m => m.alive).forEach(m => {
+    const [x, y, a] = poseOf(u, m); const d = Math.hypot(x - bx, y - by);
+    if (inShape(m, x, y, a, bx, by, 0.15) && d < bestD) { best = { u, m }; bestD = d; }
+  }));
+  return best;
+}
+
+function snapshotPos() { return Object.fromEntries(Object.entries(local.pos).map(([k, v]) => [k, [...v]])); }
+
+canvas.addEventListener('mousedown', e => {
+  if (!humanTurn()) return;
+  const p = S.pending;
+  if (!isPlacing()) return;
+  const hit = modelAt(e.offsetX, e.offsetY, p.unit_id);
+  const [bx, by] = toBoard(e.offsetX, e.offsetY);
+  if (!hit) {
+    // début d'un rectangle de sélection
+    local.band = { x0: bx, y0: by, x1: bx, y1: by, ax: bx, ay: by };
+    return;
+  }
+  if (!local.selected.has(hit.m.id) && !e.shiftKey) local.selected = new Set([hit.m.id]);
+  local.dragging = hit.m.id; local.shift = e.shiftKey;
+  local.dragStart = { bx, by, snapshot: snapshotPos() };
+  canvas.style.cursor = 'grabbing';
+});
+canvas.addEventListener('mousemove', e => {
+  const [bx, by] = toBoard(e.offsetX, e.offsetY);
+  if (local.band) {
+    local.band.x0 = Math.min(local.band.ax, bx); local.band.x1 = Math.max(local.band.ax, bx);
+    local.band.y0 = Math.min(local.band.ay, by); local.band.y1 = Math.max(local.band.ay, by);
+    render(); return;
+  }
+  if (local.dragging) {
+    const dx = bx - local.dragStart.bx, dy = by - local.dragStart.by;
+    const ids = local.shift ? Object.keys(local.dragStart.snapshot) : Array.from(local.selected.size ? local.selected : [local.dragging]);
+    ids.forEach(k => { const o = local.dragStart.snapshot[k]; if (o) local.pos[k] = [o[0] + dx, o[1] + dy, ...o.slice(2)]; });
+    render(); updateMoveExtra(); return;
+  }
+  const hit = modelAt(e.offsetX, e.offsetY, null);
+  const changed = (hit ? hit.m.id : null) !== (local.hover ? local.hover.m.id : null);
+  local.hover = hit;
+  canvas.style.cursor = hit ? (isPlacing() && S.pending.unit_id === hit.u.id ? 'grab' : 'pointer') : (isPlacing() ? 'crosshair' : 'default');
+  if (changed) { render(); showUnit(hit ? hit.u : null); }
+});
+window.addEventListener('mouseup', () => {
+  if (local.band) {
+    const b = local.band; local.band = null;
+    if (Math.abs(b.x1 - b.x0) > 0.2 || Math.abs(b.y1 - b.y0) > 0.2) {
+      const u = unitById(S.pending.unit_id);
+      local.selected = new Set(u.models.filter(m => m.alive).filter(m => { const [x, y] = modelPos(u, m); return x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1; }).map(m => m.id));
+    } else local.selected = new Set();
+    render(); return;
+  }
+  if (local.dragging) { local.dragging = null; local.dragStart = null; canvas.style.cursor = 'default'; render(); }
+});
+window.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && S && S.human_side && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+    e.preventDefault(); if (S.can_undo) undo(); return;
+  }
+  if (e.key === 'Escape') {
+    if (local.dragging && local.dragStart) { local.pos = local.dragStart.snapshot; local.dragging = null; local.dragStart = null; canvas.style.cursor = 'default'; }
+    else if (local.band) local.band = null;
+    else local.selected = new Set();
+    render(); if (S && S.pending && S.pending.max_distance) updateMoveExtra();
+  }
+  if ((e.key === 'r' || e.key === 'R') && isPlacing() && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+    // pivote les coques / ovales sélectionnés (ou survolés) de 15° ; Maj + R dans l'autre sens
+    const u = unitById(S.pending.unit_id);
+    const ids = local.selected.size ? Array.from(local.selected) : (local.hover && local.hover.u.id === u.id ? [local.hover.m.id] : u.models.filter(m => m.alive).map(m => m.id));
+    let turned = false;
+    ids.forEach(k => { const m = u.models.find(q => q.id === k); const p = local.pos[k]; if (m && p && !isRound(m)) { p[2] = (p.length > 2 ? p[2] : m.a) + (e.shiftKey ? -1 : 1) * Math.PI / 12; turned = true; } });
+    if (turned) { e.preventDefault(); render(); updateMoveExtra(); }
+  }
+  if ((e.key === ' ' || e.key === 'Enter') && humanTurn() && S.pending.kind === 'observe' && !['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { e.preventDefault(); send({ type: 'continue' }); }
+});
+canvas.addEventListener('click', e => {
+  if (!humanTurn()) return;
+  const p = S.pending;
+  const hit = modelAt(e.offsetX, e.offsetY, null);
+  if (!hit) return;
+  if (p.kind === 'select_unit') {
+    if (hit.u.side !== S.human_side) return;
+    const opt = p.options.find(o => o.unit_id === hit.u.id);
+    if (opt) send({ type: 'select_unit', unit_id: hit.u.id });
+    else { const why = p.ineligible && p.ineligible[hit.u.id]; $('error').textContent = why ? `${hit.u.name} [${hit.u.id}] : ${why.reason}` : `${hit.u.name} [${hit.u.id}] a déjà été activée.`; }
+    return;
+  }
+  if (!(p.kind === 'shoot' || p.kind === 'charge_target' || p.kind === 'oath' || p.kind === 'fight')) return;
+  if (hit.u.side === S.human_side) return;
+  const opts = p.options.filter(o => o.target_id === hit.u.id);
+  if (opts.length === 1) send({ type: 'option', index: opts[0].index });
+  else if (opts.length > 1) $('error').textContent = 'Plusieurs unités peuvent frapper cette cible : utilise les boutons.';
+  else $('error').textContent = `${hit.u.name} [${hit.u.id}] n’est pas une cible possible ici.`;
+});
+$('stepmode').addEventListener('change', async e => { await postJSON(withT(API + '/settings'), { step_mode: e.target.checked }); });
+
+function showUnit(u) {
+  const box = $('unitinfo');
+  if (!u) { box.innerHTML = HELP; return; }
+  const f = u.flags; const flags = [f.engaged && 'engagée', f.advanced && 'a avancé', f.fell_back && 'repliée', f.charged && 'a chargé', f.battle_shocked && 'battle-shock', f.has_shot && 'a tiré', f.has_fought && 'a combattu'].filter(Boolean).join(', ');
+  box.innerHTML = `<b>${u.name} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}<br>armes : ${u.weapons.join(', ')}${flags ? '<br>' + flags : ''}${u.passengers && u.passengers.length ? '<br>à bord : ' + u.passengers.map(id => `${unitById(id).name} [${id}]`).join(', ') : ''}${u.embarked_in ? '<br>à bord de ' + u.embarked_in : ''}`;
+}
+
+// ------------------------------------------------------------ annulation, historique, mémoire locale
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function renderBanner() {
+  const u = S.last_undo;
+  if (view.seenUndo === null) { view.seenUndo = u ? u.n : 0; return; }  // annulations antérieures à l'ouverture de la page
+  if (!u || u.n <= view.seenUndo) return;
+  view.seenUndo = u.n;
+  const mine = u.by === S.human_side;
+  const who = mine ? 'Tu as annulé' : `${esc(u.name)} (${SIDE_FR[u.by]}) a annulé`;
+  $('banner').innerHTML = `<button id="bannerclose">OK</button>${who} ${u.count} action${u.count > 1 ? 's' : ''} — retour à ${esc(u.where)}, avant « ${esc(u.first)} ». Les dés suivants seront nouveaux.`;
+  $('banner').classList.add('open');
+  $('bannerclose').onclick = () => $('banner').classList.remove('open');
+}
+async function refreshHistory(force) {
+  if (!view.historyOpen) return;
+  const key = `${S.timeline}|${S.history_length}`;
+  if (!force && key === view.historyKey) { renderHistory(); return; }
+  view.historyKey = key;
+  const res = await getJSON(withT(API + '/history'));
+  view.history = res.history || [];
+  renderHistory();
+}
+function renderHistory() {
+  const box = $('history');
+  const rows = view.history.slice().reverse().map(h => {
+    const side = h.side === 'attacker' ? 'att' : 'def';
+    const where = h.round ? `R${h.round} · ${PHASE_FR[h.phase] || h.phase}` : (PHASE_FR[h.phase] || h.phase);
+    const btnHtml = S.human_side ? `<button data-to="${h.i}" class="${view.confirmAt === h.i ? 'confirm' : ''}">${view.confirmAt === h.i ? 'confirmer ?' : 'revenir avant'}</button>` : '';
+    return `<div class="h"><span class="i">${h.i + 1}</span><span class="w">${esc(where)}</span><span class="l ${side} ${h.by === 'bot' ? 'bot' : ''}">${esc(h.label)}</span>${btnHtml}</div>`;
+  }).join('');
+  box.innerHTML = `<div class="head"><span>Historique — ${view.history.length} action(s), la plus récente en haut</span><button id="histclose">Fermer</button></div>`
+    + (S.human_side ? '<div style="color:var(--muted);margin-bottom:4px">« revenir avant » annule cette action et toutes les suivantes (les deux joueurs le voient) ; les dés d’après seront nouveaux.</div>' : '')
+    + (rows || '<div style="color:var(--muted)">Aucune action pour l’instant.</div>');
+  $('histclose').onclick = () => { view.historyOpen = false; box.classList.remove('open'); };
+  box.querySelectorAll('button[data-to]').forEach(b => b.onclick = () => {
+    const to = +b.dataset.to;
+    if (view.confirmAt === to) undo(to);
+    else { view.confirmAt = to; renderHistory(); }
+  });
+}
+$('histbtn').addEventListener('click', () => {
+  view.historyOpen = !view.historyOpen;
+  $('history').classList.toggle('open', view.historyOpen);
+  view.confirmAt = null;
+  if (view.historyOpen) refreshHistory(true);
+  $('log').scrollTop = $('log').scrollHeight;
+});
+$('undobtn').addEventListener('click', () => undo());
+function rememberGame() {
+  // le navigateur garde les parties ouvertes avec un lien de joueur (page d'accueil : « Mes parties »)
+  if (!TOKEN || !S.human_side) return;
+  try {
+    const all = JSON.parse(localStorage.getItem('fortyk.mygames') || '[]');
+    const link = location.pathname + location.search;
+    const item = { id: GID, side: S.human_side, link, title: (S.game && S.game.title) || GID, seen: new Date().toISOString() };
+    const rest = all.filter(g => !(g.id === GID && g.side === S.human_side));
+    localStorage.setItem('fortyk.mygames', JSON.stringify([item, ...rest].slice(0, 100)));
+  } catch (e) { /* stockage indisponible : sans conséquence */ }
+}
+
+window.addEventListener('resize', fit);
+(async () => {
+  const lay = await getJSON(API + '/layout');
+  if (lay.ok === false) { $('dtitle').textContent = 'Partie introuvable'; $('dhint').textContent = lay.error || ''; return; }
+  layout = lay; fit(); poll();
+})();
+})();
+</script>
+</body>
+</html>

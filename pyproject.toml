@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fortyk"
+version = "0.1.0"
+description = "Toy model 2D de Warhammer 40,000 (V11) et IA adverse"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Valentin Lefranc" }]
+# La couche données (fortyk.data) n'utilise que la bibliothèque standard ; le moteur a besoin de numpy
+# (géométrie vectorisée : lignes de vue, légalité des mouvements, déploiement).
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4", "shapely>=2.0"]
+
+[tool.setuptools.packages.find]
+include = ["fortyk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
