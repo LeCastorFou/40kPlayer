@@ -221,6 +221,34 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             request(base, "/api/g/inconnue/state")
 
+    def test_delete_game(self):
+        base, app = self.serve()
+        res = request(base, "/api/games", {"lists": {"attacker": None, "defender": None}, "players": HUMANS})
+        gid = res["id"]
+        ta, td = res["links"]["attacker"].split("t=")[1], res["links"]["defender"].split("t=")[1]
+        self.assertTrue(request(base, f"/api/g/{gid}/action?t={ta}", {"type": "option", "index": 0})["ok"])
+        self.assertFalse(request(base, f"/api/g/{gid}/delete", {})["ok"])  # spectateur
+        out = request(base, f"/api/g/{gid}/delete?t={td}", {})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(request(base, "/api/games")["games"], [])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request(base, f"/api/g/{gid}/state?t={ta}")
+        self.assertEqual(ctx.exception.code, 410)
+        body = json.loads(ctx.exception.read())
+        self.assertTrue(body["deleted"])
+        self.assertIn("Paul", body["error"])
+        refused = request(base, f"/api/g/{gid}/action?t={ta}", {"type": "option", "index": 0})
+        self.assertFalse(refused["ok"])
+        self.assertTrue(refused.get("deleted"))
+        self.assertTrue((app.store.directory / "deleted" / f"{gid}.json").exists())  # récupérable à la main
+        self.assertFalse((app.store.directory / f"{gid}.json").exists())
+        # partie en attente : seul le créateur peut l'annuler
+        w = request(base, "/api/games", {"side": "attacker", "name": "Valentin", "opponent": {"kind": "human"}})
+        invite = w["join"]["invite"].split("t=")[1]
+        self.assertFalse(request(base, f"/api/g/{w['id']}/delete?t={invite}", {})["ok"])
+        self.assertTrue(request(base, f"/api/g/{w['id']}/delete?t={w['links']['attacker'].split('t=')[1]}", {})["ok"])
+        self.assertFalse(request(base, "/api/join", {"code": w["join"]["code"], "name": "Paul"})["ok"])
+
     def test_join_with_game_code_and_own_list(self):
         """Le créateur choisit sa liste et son camp ; l'adversaire rejoint avec le code de partie et sa liste."""
         base, app = self.serve()

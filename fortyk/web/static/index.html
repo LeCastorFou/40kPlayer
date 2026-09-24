@@ -67,7 +67,7 @@
 <div id="boardwrap"><canvas id="board"></canvas></div>
 <div id="side">
   <div id="status">
-    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
+    <div id="topbar"><button id="undobtn" title="Annuler la dernière action d’un joueur (Ctrl/Cmd + Z)">↶ Annuler</button><button id="histbtn">Historique</button><button id="delbtn" class="warn" title="Supprimer la partie pour les deux joueurs">Supprimer</button><a class="btnlink" id="homebtn" href="/">Accueil</a></div>
     <h1 id="title">40kPlayer</h1>
     <div class="score"><span>Round <b id="round">–</b></span><span>Phase <b id="phase">–</b></span><span id="turn"></span></div>
     <div class="score"><span><span id="nameA">Attaquant</span> <b class="att" id="scoreA">0</b> VP · <b class="att" id="cpA">0</b> CP</span><span><span id="nameD">Défenseur</span> <b class="def" id="scoreD">0</b> VP · <b class="def" id="cpD">0</b> CP</span>
@@ -124,7 +124,7 @@ async function undo(to) {
 async function poll() {
   try {
     const st = await getJSON(withT(API + '/state?since=' + logLen));
-    if (st.ok === false) { $('dtitle').textContent = 'Partie introuvable'; $('dhint').textContent = st.error || ''; return; }
+    if (st.ok === false) { gameGone(st); return; }
     if (st.waiting) { view.wasWaiting = true; renderWaiting(st); setTimeout(poll, 2000); return; }
     if (view.wasWaiting) { location.reload(); return; }  // l'adversaire vient de rejoindre : on repart d'un état propre
     if (view.timeline !== null && st.timeline !== view.timeline && logLen > 0) {
@@ -264,6 +264,7 @@ function renderStatus() {
   $('turn').textContent = S.game_over ? 'partie terminée' : (S.battle_round ? `tour : ${SIDE_FR[S.side_to_move]}` : '');
   $('steplabel').style.display = (S.vs_bot && me) ? '' : 'none';
   $('undobtn').style.display = me ? '' : 'none';
+  $('delbtn').style.display = me ? '' : 'none';
   $('histbtn').style.display = '';
   $('undobtn').disabled = !S.can_undo;
   $('histbtn').textContent = `Historique (${S.history_length || 0})`;
@@ -702,6 +703,31 @@ function showUnit(u) {
   box.innerHTML = `<b>${u.name} [${u.id}]</b> — ${SIDE_FR[u.side]} — ${u.strength}/${u.starting_strength} fig. — M ${u.move}" T${u.profile.T} Sv${u.profile.Sv}+ W${u.profile.W} Ld${u.profile.Ld}+ OC${u.profile.OC}<br>armes : ${u.weapons.join(', ')}${flags ? '<br>' + flags : ''}${u.passengers && u.passengers.length ? '<br>à bord : ' + u.passengers.map(id => `${unitById(id).name} [${id}]`).join(', ') : ''}${u.embarked_in ? '<br>à bord de ' + u.embarked_in : ''}`;
 }
 
+// ------------------------------------------------------------ suppression
+function gameGone(st) {
+  $('dtitle').textContent = st.deleted ? 'Partie supprimée' : 'Partie introuvable';
+  $('dhint').textContent = st.error || '';
+  $('dbtns').innerHTML = ''; $('extra').innerHTML = '';
+  $('dbtns').appendChild(btn('Retour à l’accueil', () => { location.href = '/'; }, 'primary'));
+  ['undobtn', 'histbtn', 'delbtn', 'steplabel'].forEach(id => { $(id).style.display = 'none'; });
+  try {  // on l'enlève de « Mes parties »
+    const all = JSON.parse(localStorage.getItem('fortyk.mygames') || '[]');
+    localStorage.setItem('fortyk.mygames', JSON.stringify(all.filter(g => g.id !== GID)));
+  } catch (e) { /* stockage indisponible */ }
+}
+let delArmed = null;
+$('delbtn').addEventListener('click', async () => {
+  if (!delArmed) {  // premier clic : on arme, second clic dans les 4 s : on supprime
+    $('delbtn').textContent = 'Confirmer la suppression ?';
+    delArmed = setTimeout(() => { delArmed = null; $('delbtn').textContent = 'Supprimer'; }, 4000);
+    return;
+  }
+  clearTimeout(delArmed); delArmed = null;
+  const res = await postJSON(withT(API + '/delete'), {});
+  if (!res.ok) { $('error').textContent = res.error || 'suppression refusée'; $('delbtn').textContent = 'Supprimer'; return; }
+  gameGone({ deleted: true, error: 'Tu as supprimé cette partie.' });
+});
+
 // ------------------------------------------------------------ partie en attente du second joueur
 async function renderWaiting(st) {
   const key = JSON.stringify([st.you, st.can_join, st.join && st.join.code, st.players]);
@@ -712,6 +738,7 @@ async function renderWaiting(st) {
   $('nameA').textContent = P.attacker && P.attacker.name ? `${P.attacker.name} — attaquant` : 'Attaquant (en attente)';
   $('nameD').textContent = P.defender && P.defender.name ? `${P.defender.name} — défenseur` : 'Défenseur (en attente)';
   ['undobtn', 'histbtn', 'steplabel'].forEach(id => { $(id).style.display = 'none'; });
+  $('delbtn').style.display = st.join ? '' : 'none';  // le créateur peut annuler sa partie en attente
   const box = $('dbtns'); box.innerHTML = ''; $('extra').innerHTML = ''; $('dobs').textContent = '';
   if (st.join) {
     // le créateur : code à donner, ou lien d'invitation
@@ -813,7 +840,7 @@ function rememberGame() {
 window.addEventListener('resize', fit);
 (async () => {
   const lay = await getJSON(API + '/layout');
-  if (lay.ok === false) { $('dtitle').textContent = 'Partie introuvable'; $('dhint').textContent = lay.error || ''; return; }
+  if (lay.ok === false) { gameGone(lay); return; }
   layout = lay; fit(); poll();
 })();
 })();

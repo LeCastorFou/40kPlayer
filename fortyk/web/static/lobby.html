@@ -21,6 +21,7 @@
   button, a.btn { background:#3a3d44; color:var(--ink); border:1px solid #555; border-radius:6px; padding:6px 11px; cursor:pointer; font-size:13px; text-decoration:none; display:inline-block; }
   button:hover, a.btn:hover { background:#4a4e57; }
   button.primary, a.btn.primary { background:#2f6b3a; border-color:#3f8f4f; }
+  button.warn { background:#6b3a2f; border-color:#8f4f3f; } button.warn:hover { background:#7d4536; }
   button.primary:hover, a.btn.primary:hover { background:#38804a; }
   .hint { color:var(--muted); font-size:12.5px; }
   .bad { color:var(--err); } .ok { color:var(--ok); }
@@ -143,10 +144,23 @@ function renderMine() {
     const turn = g && g.status === 'active' && g.to_move ? (g.to_move === m.side ? ' — <b class="ok">à toi</b>' : ` — au tour ${g.to_move === 'attacker' ? 'de l’attaquant' : 'du défenseur'}`) : '';
     return `<tr><td><b>${esc(g ? g.title : m.title)}</b><div class="sub">tu joues ${SIDE_FR[m.side]}${g ? ' · ' + playersLine(g) : ''}</div></td>
       <td>${status}<div class="sub">${esc(stateLine(g))}${turn}</div></td><td class="sub">${esc(when(g ? g.updated : m.seen))}</td>
-      <td><a class="btn primary" href="${esc(m.link)}">Reprendre</a> <button data-copy="${esc(abs(m.link))}" data-label="Copier mon lien">Copier mon lien</button></td></tr>`;
+      <td>${g ? `<a class="btn primary" href="${esc(m.link)}">Reprendre</a> <button data-copy="${esc(abs(m.link))}" data-label="Copier mon lien">Copier mon lien</button>
+        <button class="warn" data-del="${esc(m.id)}" data-link="${esc(m.link)}">Supprimer</button>` : `<button data-forget="${esc(m.id)}">Retirer de la liste</button>`}</td></tr>`;
   }).join('');
-  $('mine').innerHTML = `<table><tr><th>Partie</th><th>État</th><th>Dernière action</th><th></th></tr>${rows}</table>`;
+  $('mine').innerHTML = `<table><tr><th>Partie</th><th>État</th><th>Dernière action</th><th></th></tr>${rows}</table>
+    <div class="hint" style="margin-top:6px">« Supprimer » efface la partie pour les deux joueurs (deux clics pour confirmer).</div>`;
   bindCopy($('mine'));
+  $('mine').querySelectorAll('button[data-forget]').forEach(b => b.onclick = () => {
+    store.set('fortyk.mygames', store.get('fortyk.mygames', []).filter(g => g.id !== b.dataset.forget)); renderMine();
+  });
+  $('mine').querySelectorAll('button[data-del]').forEach(b => b.onclick = async () => {
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Confirmer ?'; setTimeout(() => { delete b.dataset.armed; b.textContent = 'Supprimer'; }, 4000); return; }
+    const t = new URLSearchParams(b.dataset.link.split('?')[1] || '').get('t') || '';
+    const res = await postJSON(`/api/g/${encodeURIComponent(b.dataset.del)}/delete?t=${encodeURIComponent(t)}`, {});
+    if (!res.ok && !res.deleted) { b.textContent = res.error || 'refusé'; return; }
+    store.set('fortyk.mygames', store.get('fortyk.mygames', []).filter(g => g.id !== b.dataset.del));
+    refresh();
+  });
 }
 
 function renderGames() {

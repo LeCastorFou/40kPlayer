@@ -57,7 +57,7 @@ from ..engine.state import SIDES, GameState, other_side
 from ..training import build_initial_state, iter_replay
 from .serialize import action_label, decision_to_json, factions_of, layout_to_json, state_to_json
 
-__all__ = ["FORMAT", "GameStore", "Room", "Rooms", "RoomError", "RoomWaiting", "decode_action", "build_initial_state", "public_record",
+__all__ = ["FORMAT", "GameStore", "Room", "Rooms", "RoomError", "RoomWaiting", "RoomDeleted", "decode_action", "build_initial_state", "public_record",
            "waiting_snapshot", "normalize_code", "format_code", "new_record"]
 
 FORMAT = "fortyk-game/2"
@@ -69,6 +69,16 @@ PHASE_FR = {"deployment": "déploiement", "scouts": "scouts", "command": "comman
 
 class RoomError(Exception):
     """Refus d'une requête (message affichable au joueur)."""
+
+
+class RoomDeleted(RoomError):
+    """La partie a été supprimée (le fichier est rangé dans ``deleted/``, récupérable)."""
+
+    def __init__(self, info: Dict[str, Any]):
+        who = info.get("name") or SIDE_FR.get(info.get("by"), "un joueur")
+        side = f" ({SIDE_FR[info['by']]})" if info.get("by") in SIDE_FR else ""
+        super().__init__(f"Cette partie a été supprimée par {who}{side}.")
+        self.info = info
 
 
 def _now() -> str:
@@ -231,9 +241,36 @@ class GameStore:
         tmp.write_text(json.dumps(record, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, path)
 
+    @property
+    def trash(self) -> Path:
+        return self.directory / "deleted"
+
+    def delete(self, record: Dict[str, Any], by: str) -> Dict[str, Any]:
+        """Supprime la partie : le fichier est déplacé dans ``deleted/`` (hors des listes et des exports,
+        mais récupérable à la main), avec qui l'a supprimée et quand."""
+        info = {"t": _now(), "by": by, "name": (record["players"].get(by) or {}).get("name")}
+        doc = json.loads(json.dumps(record))
+        doc["deleted"] = info
+        self.trash.mkdir(parents=True, exist_ok=True)
+        dest = self.trash / f"{record['id']}.json"
+        tmp = dest.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, dest)
+        path = self.path(record["id"])
+        if path.exists():
+            path.unlink()
+        self._summaries.pop(record["id"], None)
+        return info
+
     def load(self, gid: str) -> Dict[str, Any]:
         path = self.path(gid)
         if not path.exists():
+            gone = self.trash / f"{gid}.json"
+            if gone.exists():
+                try:
+                    raise RoomDeleted(json.loads(gone.read_text(encoding="utf-8")).get("deleted") or {})
+                except ValueError:
+                    raise RoomDeleted({}) from None
             raise RoomError("partie introuvable")
         doc = json.loads(path.read_text(encoding="utf-8"))
         if doc.get("format") != FORMAT:
@@ -307,6 +344,7 @@ class Room:
         self.state: Optional[GameState] = None
         self.observe: Optional[Dict[str, str]] = None  #: pause « pas à pas » après une action du bot
         self.error: Optional[str] = None
+        self.deleted: Optional[Dict[str, Any]] = None  #: renseigné quand la partie est supprimée
         self._replaying = False
         self._cache: Dict[Optional[str], Dict[str, Any]] = {}
         seed = int(record["config"]["seed"])
@@ -376,6 +414,8 @@ class Room:
         return None
 
     def _require_player(self, token: Optional[str]) -> str:
+        if self.deleted is not None:
+            raise RoomDeleted(self.deleted)
         side = self.side_of(token)
         if side is None:
             raise RoomError("lien de spectateur : seuls les joueurs peuvent agir")
@@ -519,6 +559,8 @@ class Room:
     # ------------------------------------------------------------ état → JSON
 
     def _changed(self, save: bool = True) -> None:
+        if self.deleted is not None:
+            return
         s = self.state
         over = self.engine.is_over(s)
         rec = self.record
@@ -646,6 +688,28 @@ class Rooms:
                 room = Room(self.cat, self.store, record)
                 self._rooms[gid] = room
             return room
+
+    def delete(self, gid: str, token: Optional[str]) -> Dict[str, Any]:
+        """Un joueur de la partie la supprime (le créateur seulement, tant que l'adversaire n'a pas rejoint)."""
+        with self._lock:
+            room = self._rooms.get(gid)
+            record = room.record if room is not None else self.store.load(gid)
+            by = None
+            for side, p in record["players"].items():
+                if token and p.get("token") and hmac.compare_digest(p["token"], token):
+                    by = side
+            if by is None:
+                raise RoomError("seuls les joueurs de la partie peuvent la supprimer")
+            if record.get("status") == "waiting" and by == (record.get("join") or {}).get("side"):
+                raise RoomError("seul le créateur peut supprimer une partie en attente")
+            if room is not None:
+                with room.lock:
+                    info = self.store.delete(room.record, by)
+                    room.deleted = info
+            else:
+                info = self.store.delete(record, by)
+            self._rooms.pop(gid, None)
+            return {"ok": True, "deleted": info}
 
     def create(self, **kwargs) -> Room:
         room = Room.create(self.cat, self.store, **kwargs)

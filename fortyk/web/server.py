@@ -22,6 +22,8 @@ API (JSON) :
 * ``POST /api/g/<id>/undo?t=`` ``{to: index | null}`` — revenir avant l'action ``to`` (null : la
   dernière action d'un joueur) ; les dés suivants sont re-tirés ;
 * ``POST /api/g/<id>/settings?t=`` ``{step_mode}`` — pas à pas contre le bot ;
+* ``POST /api/g/<id>/delete?t=`` — supprimer la partie (un de ses joueurs ; le fichier passe dans
+  ``deleted/``, récupérable à la main, hors des listes et des exports) ;
 * ``GET /api/g/<id>/record`` — le document de la partie (sans jetons) ; ``GET /api/g/<id>/export`` —
   export d'entraînement (états avant chaque décision) ;
 * ``GET /api/lists`` · ``POST /api/lists/preview`` · ``POST /api/lists/save`` ; ``GET /healthz``.
@@ -50,7 +52,7 @@ from urllib.parse import parse_qs, urlparse
 from ..data import Catalog, load_catalog
 from ..engine.layout import load_layout
 from ..engine.rules import DEFAULT_RULES
-from .rooms import GameStore, Room, RoomError, Rooms, RoomWaiting, normalize_code, public_record, waiting_snapshot
+from .rooms import GameStore, Room, RoomDeleted, RoomError, Rooms, RoomWaiting, normalize_code, public_record, waiting_snapshot
 from .serialize import layout_to_json
 
 __all__ = ["App", "make_handler", "serve", "STATIC_DIR"]
@@ -243,6 +245,8 @@ class _Handler(BaseHTTPRequestHandler):
                     states = qs.get("states", ["1"])[0] != "0"
                     return self._json(training_export(self.app.cat, rec, states=states), download=f"40k_{gid}_training.json")
             self.send_error(404)
+        except RoomDeleted as err:
+            self._json({"ok": False, "deleted": True, "error": str(err)}, 410)
         except RoomError as err:
             self._json({"ok": False, "error": str(err)}, 404)
         except Exception as err:  # noqa: BLE001
@@ -274,6 +278,8 @@ class _Handler(BaseHTTPRequestHandler):
                 gid, what = m.groups()
                 if what == "join":
                     return self._json(self.app.join_game(payload, gid=gid, token=token))
+                if what == "delete":
+                    return self._json(self.app.rooms.delete(gid, token))
                 room = self._room(gid)
                 if what == "action":
                     return self._json(room.act(token, payload))
@@ -284,7 +290,7 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json(room.set_step_mode(token, bool(payload.get("step_mode", True))))
             self.send_error(404)
         except RoomError as err:
-            self._json({"ok": False, "error": str(err)})
+            self._json({"ok": False, "error": str(err), **({"deleted": True} if isinstance(err, RoomDeleted) else {})})
         except Exception as err:  # noqa: BLE001
             traceback.print_exc()
             self._json({"ok": False, "error": f"{type(err).__name__}: {err}"}, 500)
