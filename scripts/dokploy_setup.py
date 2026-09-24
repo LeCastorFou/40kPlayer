@@ -75,6 +75,11 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def notice(msg: str) -> None:
+    """Ligne visible dans les annotations du run (lisibles par l'API GitHub, sans les logs)."""
+    print(f"::notice::{msg}" if os.environ.get("GITHUB_ACTIONS") else msg)
+
+
 def short(body: Any, n: int = 300) -> str:
     return (json.dumps(body) if not isinstance(body, str) else body)[:n]
 
@@ -204,11 +209,23 @@ def build_and_env(api: Dokploy, app_id: str, access_code: Optional[str]) -> None
     if code != 200:
         fail(f"application.saveBuildType -> {code} {short(body)}")
     env = f"FORTYK_ACCESS_CODE={access_code}" if access_code else ""
-    code, body = api.call("application.saveEnvironment", {"applicationId": app_id, "env": env, "buildArgs": "", "buildSecrets": ""})
-    if code != 200:
-        code, body = api.call("application.saveEnvironment", {"applicationId": app_id, "env": env, "buildArgs": ""})
-    if code != 200:
-        fail(f"application.saveEnvironment -> {code}")
+    tries = [
+        {"applicationId": app_id, "env": env, "buildArgs": "", "buildSecrets": "", "createEnvFile": False},
+        {"applicationId": app_id, "env": env, "buildArgs": "", "buildSecrets": ""},
+        {"applicationId": app_id, "env": env, "buildArgs": ""},
+        {"applicationId": app_id, "env": env},
+    ]
+    errors = []
+    for payload in tries:
+        code, body = api.call("application.saveEnvironment", payload)
+        if code == 200:
+            break
+        text = short(body, 600)
+        if access_code:
+            text = text.replace(access_code, "***")
+        errors.append(text)
+    else:
+        fail(f"application.saveEnvironment -> {code} ; réponses : {' | '.join(errors)}")
     print("build : Dockerfile ; variable FORTYK_ACCESS_CODE " + ("définie" if access_code else "vide (création de parties ouverte à tous)"))
 
 
@@ -286,7 +303,7 @@ def deploy_and_wait(api: Dokploy, app_id: str, url: str, minutes: int = 20) -> N
     for _ in range(20):
         try:
             with urllib.request.urlopen(url + "/healthz", timeout=10) as r:
-                print(f"santé : {url}/healthz -> {r.status} {r.read()[:60].decode(errors='replace')}")
+                notice(f"santé : {url}/healthz -> {r.status} {r.read()[:60].decode(errors='replace')}")
                 return
         except Exception as err:  # noqa: BLE001
             last = err
@@ -326,7 +343,7 @@ def main(argv=None) -> int:
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"### 40kPlayer sur Dokploy\n\n- projet : `{args.project}`\n- application : `{args.app}` (`{app_id}`)\n- adresse : {site}\n")
-    print(f"OK — {site}")
+    notice(f"40kPlayer : projet {args.project}, application {args.app} ({app_id}), adresse {site}")
     return 0
 
 
